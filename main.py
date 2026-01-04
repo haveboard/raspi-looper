@@ -6,6 +6,10 @@ import numpy as np
 import time
 import os
 from gpiozero import LED, Button
+import board
+import busio
+from adafruit_ssd1306 import Adafruit_SSD1306
+from PIL import Image, ImageDraw, ImageFont
 
 debounce_length = 0.03 #length in seconds of button debounce period
 
@@ -21,6 +25,58 @@ RECBUTTONS = (Button(19, bounce_time = debounce_length),
               Button(20, bounce_time = debounce_length))
 OLED_SDA_PIN = 2
 OLED_SCL_PIN = 3
+
+#initialize OLED display
+try:
+    i2c = busio.I2C(board.SCL, board.SDA)
+    display = Adafruit_SSD1306.Adafruit_SSD1306_128_64(i2c=i2c)
+    display.begin()
+    display.clear()
+    display.display()
+    
+    # Create image buffer
+    image = Image.new('1', (128, 64))
+    draw = ImageDraw.Draw(image)
+    
+    # Try to load a font; fall back to default if not available
+    try:
+        font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', 10)
+        small_font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', 8)
+    except:
+        font = ImageFont.load_default()
+        small_font = font
+    
+    oled_available = True
+except Exception as e:
+    print(f'OLED initialization failed: {e}')
+    oled_available = False
+
+def update_oled(title, lines):
+    '''
+    update_oled() displays text on OLED screen
+    title: main title (bold)
+    lines: list of text lines to display
+    '''
+    if not oled_available:
+        return
+    try:
+        image = Image.new('1', (128, 64))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 127, 63), outline=255)
+        
+        # Title
+        draw.text((2, 2), title, font=font, fill=255)
+        
+        # Content lines
+        y_pos = 16
+        for line in lines:
+            draw.text((4, y_pos), str(line), font=small_font, fill=255)
+            y_pos += 10
+        
+        display.image(image)
+        display.display()
+    except Exception as e:
+        pass
 
 #get configuration (audio settings etc.) from file
 settings_file = open('Config/settings.prt', 'r')
@@ -44,6 +100,13 @@ LENGTH = 0 #length of the first recording on track 1, all subsequent recordings 
 print(str(RATE) + ' ' +  str(CHUNK))
 print('NEW VERSION/nlatency correction (buffers): ' + str(LATENCY))
 print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
+
+update_oled('LOADING', [
+    f'Rate: {RATE} Hz',
+    f'Buffer: {CHUNK}',
+    f'Latency: {LATENCY}',
+    f'In: {INDEVICE} Out: {OUTDEVICE}'
+])
 
 silence = np.zeros([CHUNK], dtype = np.int16) #a buffer containing silence
 
@@ -284,10 +347,15 @@ def update_volume():
     else:
         output_volume = 1
     print('output volume = ' + str(output_volume))
+    update_oled('MIXING', [
+        f'Peak: {peak}',
+        f'Volume: {output_volume:.3f}'
+    ])
 
 def show_status():
     '''
     show_status() checks which loops are recording/playing and lights up LEDs accordingly
+    Also updates OLED display with current loop status
     '''
     for i in range(4):
         if loops[i].is_recording:
@@ -298,6 +366,17 @@ def show_status():
             PLAYLEDS[i].on()
         else:
             PLAYLEDS[i].off()
+    
+    # Update OLED display
+    status_lines = []
+    for i in range(4):
+        rec = 'R' if loops[i].is_recording else ' '
+        play = 'P' if loops[i].is_playing else ' '
+        wait = 'W' if loops[i].is_waiting else ' '
+        len_str = f'{loops[i].length}' if loops[i].length > 0 else '-'
+        status_lines.append(f'T{i+1}:[{rec}{play}{wait}] L:{len_str}')
+    
+    update_oled('STATUS', status_lines)
 
 setup_is_recording = False #set to True when track 1 recording button is first pressed
 setup_donerecording = False #set to true when first track 1 recording is done
@@ -378,6 +457,11 @@ looping_stream = pa.open(
 time.sleep(3)
 #then we turn on all lights to indicate that looper is ready to start looping
 print('ready')
+update_oled('READY', [
+    'Press Track 1',
+    'Record Button',
+    'to start'
+])
 for led in RECLEDS:
     led.on()
 for led in PLAYLEDS:
@@ -388,6 +472,11 @@ RECBUTTONS[0].wait_for_press()
 #when the button is pressed, set the flag... looping_callback will see this flag. Also start recording on track 1
 setup_is_recording = True
 loops[0].start_recording(prev_rec_buffer)
+
+update_oled('RECORDING', [
+    'Track 1',
+    'Recording...'
+])
 
 #turn off all LEDs except master loop record
 for i in range(1, 4):
@@ -404,6 +493,13 @@ setup_donerecording = True
 print(LENGTH)
 loops[0].initialize()
 print('length is ' + str(LENGTH))
+
+update_oled('LOOPING', [
+    f'Loop Length: {LENGTH}',
+    'Press buttons',
+    'to record'
+])
+
 #stop recording on track 1, light LEDs appropriately, then allow time for button release
 loops[0].set_recording()
 show_status()

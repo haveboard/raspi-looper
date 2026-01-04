@@ -22,6 +22,8 @@ See GPIO connections table and wiring diagram.
 ### Basic
 - Install pyaudio
 - Uninstall pulseaudio
+- Install adafruit-circuitpython-ssd1306 (for OLED display)
+- Install Pillow (for OLED display)
 - Download this repository
 - Set main.py to start on boot (run main.py as sudo)
 
