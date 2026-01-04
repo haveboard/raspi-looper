@@ -3,9 +3,12 @@ Raspberry Pi looper pin connections:
 +------------+----------------+-----------+
 |    Type    |    Function    |    Pin    |
 +------------+----------------+-----------+
-|   Ground   |     Ground     |    GND    |
-|    LED     |  Track 1 Play  |   GPIO2   |
-|    LED     |  Track 2 Play  |   GPIO3   |
+|    OLED    |  SDA           |   GPIO2   |
+|    OLED    |  SCL           |   GPIO3   |
+|    OLED    |  3.3v          |   3.3V    |
+|   Ground   |  Ground        |    GND    |
+|    LED     |  Track 1 Play  |   GPIO12  |
+|    LED     |  Track 2 Play  |   GPIO16  |
 |    LED     |  Track 3 Play  |   GPIO4   |
 |    LED     |  Track 4 Play  |   GPIO17  |
 |    LED     |  Track 1 Rec   |   GPIO27  |
