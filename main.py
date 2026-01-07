@@ -8,7 +8,7 @@ import os
 from gpiozero import LED, Button
 import board
 import busio
-from adafruit_ssd1306 import Adafruit_SSD1306
+import adafruit_ssd1306
 from PIL import Image, ImageDraw, ImageFont
 
 debounce_length = 0.03 #length in seconds of button debounce period
