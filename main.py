@@ -29,7 +29,7 @@ OLED_SCL_PIN = 3
 #initialize OLED display
 try:
     i2c = busio.I2C(board.SCL, board.SDA)
-    display = Adafruit_SSD1306.Adafruit_SSD1306_128_64(i2c=i2c)
+    display = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
     display.begin()
     display.clear()
     display.display()
