@@ -17,20 +17,21 @@ except Exception:
     pass
 
 debounce_length = 0.03 #length in seconds of button debounce period
+hold_time_length = 2.0 #length in seconds to hold button before triggering held event
 
 # Thread lock for LED updates
 led_update_lock = threading.Lock()
 
 PLAYLEDS = (LED(12), LED(16), LED(4), LED(17))
 RECLEDS = (LED(27), LED(22), LED(10), LED(9))
-PLAYBUTTONS = (Button(19, bounce_time = debounce_length),
-              Button(26, bounce_time = debounce_length),
-              Button(21, bounce_time = debounce_length),
-              Button(20, bounce_time = debounce_length))
-RECBUTTONS = (Button(11, bounce_time = debounce_length),
-               Button(5, bounce_time = debounce_length),
-               Button(6, bounce_time = debounce_length),
-               Button(13, bounce_time = debounce_length))
+PLAYBUTTONS = (Button(19, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(26, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(21, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(20, bounce_time = debounce_length, hold_time = hold_time_length))
+RECBUTTONS = (Button(11, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(5, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(6, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(13, bounce_time = debounce_length, hold_time = hold_time_length))
 
 
 #get configuration (audio settings etc.) from file
@@ -53,7 +54,7 @@ SAMPLEMAX = 0.9 * (2**15) #maximum possible value for an audio sample (little bi
 LENGTH = 0 #length of the first recording on track 1, all subsequent recordings quantized to a multiple of this.
 
 print(str(RATE) + ' ' +  str(CHUNK))
-print('NEW VERSION/nlatency correction (buffers): ' + str(LATENCY))
+print('NEW VERSION\nlatency correction (buffers): ' + str(LATENCY))
 print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
 
 silence = np.zeros([CHUNK], dtype = np.int16) #a buffer containing silence
@@ -403,7 +404,11 @@ for led in PLAYLEDS:
     led.on()
 
 #once all LEDs are on, we wait for the master loop record button to be pressed
+# Wait a bit for GPIO to stabilize after LED changes
+time.sleep(0.3)
+print('Waiting for first button press...')
 RECBUTTONS[0].wait_for_press()
+print('Button pressed! Starting recording...')
 #when the button is pressed, set the flag... looping_callback will see this flag. Also start recording on track 1
 setup_is_recording = True
 loops[0].start_recording(prev_rec_buffer)
@@ -416,8 +421,10 @@ for led in PLAYLEDS:
 
 #allow time for button release, otherwise pressing the button once will start and stop the recording
 time.sleep(0.5)
+print('Waiting for second button press to stop recording...')
 #now wait for button to be pressed again, then stop recording and initialize master loop
 RECBUTTONS[0].wait_for_press()
+print('Button pressed! Stopping recording...')
 setup_is_recording = False
 setup_donerecording = True
 print(LENGTH)
@@ -433,31 +440,44 @@ time.sleep(0.5)
 
 finished = False
 #calling finish() will set finished flag, allowing program to break from loop at end of script and exit
+jam_session_active = False  # Flag to prevent premature exit
 def finish():
     global finished
+    if not jam_session_active:
+        print('Ignoring finish - jam session not yet active')
+        return
     finished = True
 
 #restart_looper() restarts this python script
 def restart_looper():
+    if not jam_session_active:
+        print('Ignoring restart - jam session not yet active')
+        return
     pa.terminate() #needed to free audio device for reuse
     os.execlp('python3', 'python3', 'main.py') #replaces current process with a new instance of the same script
 
 # Wrapper functions for button callbacks to catch exceptions
 def safe_clear_or_undo(loop_index):
     try:
+        print(f'DEBUG: clear_or_undo called for loop {loop_index}')
         loops[loop_index].clear_or_undo()
+        show_status()
     except Exception as e:
         print(f'Error in clear_or_undo for loop {loop_index}: {e}')
 
 def safe_set_recording(loop_index):
     try:
+        print(f'DEBUG: set_recording called for loop {loop_index}')
         loops[loop_index].set_recording()
+        show_status()
     except Exception as e:
         print(f'Error in set_recording for loop {loop_index}: {e}')
 
 def safe_toggle_mute(loop_index):
     try:
+        print(f'DEBUG: toggle_mute called for loop {loop_index}')
         loops[loop_index].toggle_mute()
+        show_status()
     except Exception as e:
         print(f'Error in toggle_mute for loop {loop_index}: {e}')
 
@@ -469,12 +489,14 @@ def safe_update_volume():
 
 def safe_finish():
     try:
+        print('!!! FINISH CALLED - Exiting program !!!')
         finish()
     except Exception as e:
         print(f'Error in finish: {e}')
 
 def safe_restart():
     try:
+        print('!!! RESTART CALLED - Restarting program !!!')
         restart_looper()
     except Exception as e:
         print(f'Error in restart_looper: {e}')
@@ -487,11 +509,47 @@ for i in range(4):
     RECBUTTONS[i].when_released = safe_update_volume
     PLAYBUTTONS[i].when_pressed = lambda idx=i: safe_toggle_mute(idx)
 
-PLAYBUTTONS[3].when_held = safe_finish
-PLAYBUTTONS[0].when_held = safe_restart
+# Wait for all buttons to be released before attaching finish/restart handlers
+time.sleep(0.5)
+print('Ready for jam session! Hold PLAYBUTTON 4 (GPIO 20) for 2 sec to exit, or PLAYBUTTON 1 (GPIO 19) to restart')
+
+# Don't attach finish/restart handlers yet - wait for jam session to stabilize
+jam_session_active = False
 
 #this while loop runs during the jam session.
 try:
+    # Wait a few loop iterations before enabling exit/restart to avoid spurious triggers
+    for _ in range(30):  # Wait 3 seconds (30 * 0.1)
+        show_status()
+        time.sleep(0.1)
+    
+    # Check button states before enabling exit/restart
+    print('Checking button states...')
+    stuck_buttons = []
+    for i in range(4):
+        if PLAYBUTTONS[i].is_pressed:
+            print(f'WARNING: PLAYBUTTON {i} (GPIO {[19,26,21,20][i]}) is stuck pressed!')
+            stuck_buttons.append(f'PLAY{i}')
+        if RECBUTTONS[i].is_pressed:
+            print(f'WARNING: RECBUTTON {i} (GPIO {[11,5,6,13][i]}) is stuck pressed!')
+            stuck_buttons.append(f'REC{i}')
+    
+    if stuck_buttons:
+        print(f'Stuck buttons detected: {", ".join(stuck_buttons)}')
+        print('Hardware issue detected - buttons may not work correctly')
+        print('Check your wiring: buttons should connect GPIO to GROUND when pressed')
+    
+    # Now safe to enable finish/restart (only if button 3 is not stuck)
+    jam_session_active = True
+    if not PLAYBUTTONS[3].is_pressed:
+        PLAYBUTTONS[3].when_held = safe_finish
+        print('Exit handler enabled on PLAYBUTTON 3')
+    else:
+        print('PLAYBUTTON 3 exit handler DISABLED (button stuck)')
+    PLAYBUTTONS[0].when_held = safe_restart
+    print('Restart handler enabled on PLAYBUTTON 0')
+    print('Program running - use CTRL+C to force exit')
+    
     while not finished:
         show_status()
         time.sleep(0.1)
