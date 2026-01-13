@@ -5,6 +5,7 @@ import pyaudio
 import numpy as np
 import time
 import os
+import threading
 from gpiozero import LED, Button
 # Try to use LGPIO pin factory for gpiozero if available
 from gpiozero import Device
@@ -16,6 +17,9 @@ except Exception:
     pass
 
 debounce_length = 0.03 #length in seconds of button debounce period
+
+# Thread lock for LED updates
+led_update_lock = threading.Lock()
 
 PLAYLEDS = (LED(12), LED(16), LED(4), LED(17))
 RECLEDS = (LED(27), LED(22), LED(10), LED(9))
@@ -296,15 +300,16 @@ def show_status():
     '''
     show_status() checks which loops are recording/playing and lights up LEDs accordingly
     '''
-    for i in range(4):
-        if loops[i].is_recording:
-            RECLEDS[i].on()
-        else:
-            RECLEDS[i].off()
-        if loops[i].is_playing:
-            PLAYLEDS[i].on()
-        else:
-            PLAYLEDS[i].off()
+    with led_update_lock:
+        for i in range(4):
+            if loops[i].is_recording:
+                RECLEDS[i].on()
+            else:
+                RECLEDS[i].off()
+            if loops[i].is_playing:
+                PLAYLEDS[i].on()
+            else:
+                PLAYLEDS[i].off()
 
 setup_is_recording = False #set to True when track 1 recording button is first pressed
 setup_donerecording = False #set to true when first track 1 recording is done
@@ -442,9 +447,14 @@ PLAYBUTTONS[3].when_held = finish
 PLAYBUTTONS[0].when_held = restart_looper
 
 #this while loop runs during the jam session.
-while not finished:
-    show_status()
-    time.sleep(0.1)
-
-pa.terminate()
-print('Done...')
+try:
+    while not finished:
+        show_status()
+        time.sleep(0.1)
+except Exception as e:
+    print(f'Error during jam session: {e}')
+    import traceback
+    traceback.print_exc()
+finally:
+    pa.terminate()
+    print('Done...')
