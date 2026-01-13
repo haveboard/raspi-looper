@@ -277,24 +277,31 @@ def update_volume():
     slow to run, so should be called on a different thread (e.g. a button callback function)
     '''
     global output_volume
-    peak = np.max(
-                  np.abs(
-                          loops[0].main_audio.astype(np.int32)[:][:]
-                        + loops[1].main_audio.astype(np.int32)[:][:]
-                        + loops[2].main_audio.astype(np.int32)[:][:]
-                        + loops[3].main_audio.astype(np.int32)[:][:]
-                        + loops[0].dub_audio.astype(np.int32)[:][:]
-                        + loops[1].dub_audio.astype(np.int32)[:][:]
-                        + loops[2].dub_audio.astype(np.int32)[:][:]
-                        + loops[3].dub_audio.astype(np.int32)[:][:]
-                        )
-                 )
-    print('peak = ' + str(peak))
-    if peak > SAMPLEMAX:
-        output_volume = SAMPLEMAX / peak
-    else:
-        output_volume = 1
-    print('output volume = ' + str(output_volume))
+    try:
+        # Only calculate peak if loops are initialized to avoid accessing uninitialized data
+        if not any(loop.initialized for loop in loops):
+            return
+        
+        peak = np.max(
+                      np.abs(
+                              loops[0].main_audio.astype(np.int32)[:][:]
+                            + loops[1].main_audio.astype(np.int32)[:][:]
+                            + loops[2].main_audio.astype(np.int32)[:][:]
+                            + loops[3].main_audio.astype(np.int32)[:][:]
+                            + loops[0].dub_audio.astype(np.int32)[:][:]
+                            + loops[1].dub_audio.astype(np.int32)[:][:]
+                            + loops[2].dub_audio.astype(np.int32)[:][:]
+                            + loops[3].dub_audio.astype(np.int32)[:][:]
+                            )
+                     )
+        print('peak = ' + str(peak))
+        if peak > SAMPLEMAX:
+            output_volume = SAMPLEMAX / peak
+        else:
+            output_volume = 1
+        print('output volume = ' + str(output_volume))
+    except Exception as e:
+        print(f'Error in update_volume: {e}')
 
 def show_status():
     '''
@@ -435,16 +442,53 @@ def restart_looper():
     pa.terminate() #needed to free audio device for reuse
     os.execlp('python3', 'python3', 'main.py') #replaces current process with a new instance of the same script
 
+# Wrapper functions for button callbacks to catch exceptions
+def safe_clear_or_undo(loop_index):
+    try:
+        loops[loop_index].clear_or_undo()
+    except Exception as e:
+        print(f'Error in clear_or_undo for loop {loop_index}: {e}')
+
+def safe_set_recording(loop_index):
+    try:
+        loops[loop_index].set_recording()
+    except Exception as e:
+        print(f'Error in set_recording for loop {loop_index}: {e}')
+
+def safe_toggle_mute(loop_index):
+    try:
+        loops[loop_index].toggle_mute()
+    except Exception as e:
+        print(f'Error in toggle_mute for loop {loop_index}: {e}')
+
+def safe_update_volume():
+    try:
+        update_volume()
+    except Exception as e:
+        print(f'Error in update_volume: {e}')
+
+def safe_finish():
+    try:
+        finish()
+    except Exception as e:
+        print(f'Error in finish: {e}')
+
+def safe_restart():
+    try:
+        restart_looper()
+    except Exception as e:
+        print(f'Error in restart_looper: {e}')
+
 #now defining functions of all the buttons during jam session...
 
 for i in range(4):
-    RECBUTTONS[i].when_held = loops[i].clear_or_undo
-    RECBUTTONS[i].when_pressed = loops[i].set_recording
-    RECBUTTONS[i].when_released = update_volume
-    PLAYBUTTONS[i].when_pressed = loops[i].toggle_mute
+    RECBUTTONS[i].when_held = lambda idx=i: safe_clear_or_undo(idx)
+    RECBUTTONS[i].when_pressed = lambda idx=i: safe_set_recording(idx)
+    RECBUTTONS[i].when_released = safe_update_volume
+    PLAYBUTTONS[i].when_pressed = lambda idx=i: safe_toggle_mute(idx)
 
-PLAYBUTTONS[3].when_held = finish
-PLAYBUTTONS[0].when_held = restart_looper
+PLAYBUTTONS[3].when_held = safe_finish
+PLAYBUTTONS[0].when_held = safe_restart
 
 #this while loop runs during the jam session.
 try:
