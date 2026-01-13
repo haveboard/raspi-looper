@@ -8,7 +8,6 @@ Simple 4 track looper for Raspberry Pi. Uses pyaudio.
 - 8 Buttons
 - 8 LEDs
 - Audio jacks, wires and connectors to taste
-- OLED display (optional)
 
 ### Connections
 - Buttons and LEDs connect to GPIO.
@@ -20,11 +19,10 @@ See GPIO connections table and wiring diagram.
 
 ## Software Setup
 ### Basic
-- Install pyaudio
-- Uninstall pulseaudio
-- Install adafruit-circuitpython-ssd1306 (for OLED display)
-- Install Pillow (for OLED display)
+- Install dependencies: `sudo apt install python3-pyaudio python3-numpy python3-gpiozero python3-lgpio`
+- Uninstall pulseaudio (if present)
 - Download this repository
+- Configure audio devices by running `python3 settings.py`
 - Set main.py to start on boot (run main.py as sudo)
 
 ### Optional/Troubleshooting
@@ -46,8 +44,7 @@ See GPIO connections table and wiring diagram.
 
 ### After Session
 - Hold Track 1 Play Button to start new session.
-- Hold Track 2 Play Button to enter 'developer mode' (exit the looper script).
+- Hold Track 4 Play Button to exit the looper script.
 
 ### TODO
 - Update wiring diagram with correct GPIO pins
-- Add OLED display for feedback
