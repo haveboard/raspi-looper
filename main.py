@@ -23,14 +23,14 @@ debounce_length = 0.03 #length in seconds of button debounce period
 
 PLAYLEDS = (LED(12), LED(16), LED(4), LED(17))
 RECLEDS = (LED(27), LED(22), LED(10), LED(9))
-PLAYBUTTONS = (Button(11, bounce_time = debounce_length),
-               Button(5, bounce_time = debounce_length),
-               Button(6, bounce_time = debounce_length),
-               Button(13, bounce_time = debounce_length))
-RECBUTTONS = (Button(19, bounce_time = debounce_length),
+PLAYBUTTONS = (Button(19, bounce_time = debounce_length),
               Button(26, bounce_time = debounce_length),
               Button(21, bounce_time = debounce_length),
               Button(20, bounce_time = debounce_length))
+RECBUTTONS = (Button(11, bounce_time = debounce_length),
+               Button(5, bounce_time = debounce_length),
+               Button(6, bounce_time = debounce_length),
+               Button(13, bounce_time = debounce_length))
 OLED_SDA_PIN = 2
 OLED_SCL_PIN = 3
 
