@@ -8,29 +8,65 @@ Simple 4 track looper for Raspberry Pi. Uses pyaudio.
 - 8 Buttons
 - 8 LEDs
 - Audio jacks, wires and connectors to taste
-- OLED display (optional)
+- **Optional:** I2C Display (OLED SSD1306 or LCD HD44780 with PCF8574 backpack)
 
 ### Connections
-- Buttons and LEDs connect to GPIO.
+- Buttons and LEDs connect to GPIO (see gpio_connections.txt).
 - Sound card plugs into full-size USB port on Raspberry Pi.
 - Looper input goes to sound card input AND to looper output 1 ("LIVE").
 - Soundcard output goes to looper output 2 ("LOOPS").
+
+#### Display Wiring (Optional)
+**OLED (SSD1306 128x64) - 3.3V:**
+- VCC → 3.3V (Pin 1 or 17)
+- GND → Ground
+- SDA → GPIO2 (Pin 3)
+- SCL → GPIO3 (Pin 5)
+
+**LCD (HD44780 with PCF8574 I2C backpack) - 5V:**
+- VCC → **5V** (Pin 2 or 4) - **NOT 3.3V!**
+- GND → Ground
+- SDA → GPIO2 (Pin 3)
+- SCL → GPIO3 (Pin 5)
 
 See GPIO connections table and wiring diagram.
 
 ## Software Setup
 ### Basic
-- Install pyaudio
-- Uninstall pulseaudio
-- Install adafruit-circuitpython-ssd1306 (for OLED display)
-- Install Pillow (for OLED display)
-- Download this repository
-- Set main.py to start on boot (run main.py as sudo)
+1. Install system dependencies:
+   ```bash
+   sudo apt install python3-pyaudio python3-numpy python3-gpiozero python3-lgpio i2c-tools
+   ```
+
+2. Install Python packages:
+   ```bash
+   pip install --break-system-packages -r requirements.txt
+   ```
+
+3. **(Optional)** Enable I2C for display support:
+   ```bash
+   bash enable_i2c.sh
+   sudo reboot
+   ```
+   After reboot, verify I2C devices are detected:
+   ```bash
+   i2cdetect -y 1
+   ```
+   - OLED shows at 0x3C or 0x3D
+   - LCD shows at 0x27 or 0x3F
+   - Adjust LCD contrast using the blue potentiometer on the I2C backpack if needed
+
+4. Uninstall pulseaudio (if present)
+
+5. Configure audio devices by running `python3 settings.py`
+
+6. Set main.py to start on boot (run main.py as sudo)
 
 ### Optional/Troubleshooting
 - Uninstall unnecessary software, disable GUI (speed up boot time)
 - Adjust sound levels in alsamixer (if signal is too quiet/loud)
 - Turn off WiFi (reduce noise/interference)
+- The looper works without a display - it's purely optional for status information
 
 ## User Manual
 ### Begin Session
@@ -46,8 +82,21 @@ See GPIO connections table and wiring diagram.
 
 ### After Session
 - Hold Track 1 Play Button to start new session.
-- Hold Track 2 Play Button to enter 'developer mode' (exit the looper script).
+- Hold Track 4 Play Button to exit the looper script.
+
+## Features
+- 4 independent audio tracks with overdubbing
+- Automatic volume adjustment to prevent clipping
+- Undo last overdub per track
+- Optional I2C display support (OLED or LCD)
+- Latency compensation
+- Fade in/out for smooth loop transitions
+
+## Notes
+- Display support is optional - the looper works fine without it
+- Supports both OLED (3.3V) and LCD (5V) displays automatically
+- GPIO pin assignments corrected from original - see gpio_connections.txt
+- Button mapping: PLAY and REC buttons were swapped in code vs. documentation
 
 ### TODO
 - Update wiring diagram with correct GPIO pins
-- Add OLED display for feedback

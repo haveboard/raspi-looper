@@ -5,7 +5,9 @@ import pyaudio
 import numpy as np
 import time
 import os
+import threading
 from gpiozero import LED, Button
+
 # Try to use LGPIO pin factory for gpiozero if available
 from gpiozero import Device
 try:
@@ -14,76 +16,71 @@ try:
 except Exception:
     # Fallback to default pin factory
     pass
-import board
-import busio
-import adafruit_ssd1306
-from PIL import Image, ImageDraw, ImageFont
 
 debounce_length = 0.03 #length in seconds of button debounce period
+hold_time_length = 2.0 #length in seconds to hold button before triggering held event
+
+# Thread lock for LED updates
+led_update_lock = threading.Lock()
+
+# Initialize display (supports both OLED and LCD) with error handling
+display = None
+display_type = None
+try:
+    # Try OLED first (SSD1306 128x64 I2C) - matches gpio_connections.txt
+    # Using luma.oled which directly uses smbus2 without Blinka
+    from luma.core.interface.serial import i2c
+    from luma.oled.device import ssd1306
+    from PIL import Image, ImageDraw, ImageFont
+    # Try I2C bus 1 (GPIO 2/3), then fallback to bus 20/21
+    for bus in [1, 20, 21]:
+        for addr in [0x3C, 0x3D]:
+            try:
+                serial = i2c(port=bus, address=addr)
+                display = ssd1306(serial)
+                display_type = 'OLED'
+                print(f'OLED display initialized on bus {bus} at 0x{addr:02X} (3.3V)')
+                break
+            except:
+                continue
+        if display:
+            break
+    if not display:
+        raise Exception("OLED not found on any bus")
+except Exception as e:
+    print(f'OLED not available: {e}')
+    try:
+        # Fallback to LCD (HD44780 via PCF8574 I2C) - needs 5V
+        from RPLCD.i2c import CharLCD
+        # Try both common I2C addresses on multiple buses
+        for bus in [1, 20, 21]:
+            for addr in [0x27, 0x3F]:
+                try:
+                    display = CharLCD('PCF8574', addr, port=bus, cols=16, rows=2)
+                    display_type = 'LCD'
+                    print(f'LCD display initialized on bus {bus} at 0x{addr:02X} (needs 5V)')
+                    break
+                except:
+                    continue
+            if display:
+                break
+    except Exception as e2:
+        print(f'LCD not available: {e2}')
+
+if not display:
+    print("WARNING: No display found - running without display")
 
 PLAYLEDS = (LED(12), LED(16), LED(4), LED(17))
 RECLEDS = (LED(27), LED(22), LED(10), LED(9))
-PLAYBUTTONS = (Button(11, bounce_time = debounce_length),
-               Button(5, bounce_time = debounce_length),
-               Button(6, bounce_time = debounce_length),
-               Button(13, bounce_time = debounce_length))
-RECBUTTONS = (Button(19, bounce_time = debounce_length),
-              Button(26, bounce_time = debounce_length),
-              Button(21, bounce_time = debounce_length),
-              Button(20, bounce_time = debounce_length))
-OLED_SDA_PIN = 2
-OLED_SCL_PIN = 3
+PLAYBUTTONS = (Button(11, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(5, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(6, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(13, bounce_time = debounce_length, hold_time = hold_time_length))
+RECBUTTONS = (Button(19, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(26, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(21, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(20, bounce_time = debounce_length, hold_time = hold_time_length))
 
-#initialize OLED display
-try:
-    i2c = busio.I2C(board.SCL, board.SDA)
-    display = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
-    display.fill(0)
-    display.show()
-    
-    # Create image buffer
-    image = Image.new('1', (128, 64))
-    draw = ImageDraw.Draw(image)
-    
-    # Try to load a font; fall back to default if not available
-    try:
-        font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', 10)
-        small_font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', 8)
-    except:
-        font = ImageFont.load_default()
-        small_font = font
-    
-    oled_available = True
-except Exception as e:
-    print(f'OLED initialization failed: {e}')
-    oled_available = False
-
-def update_oled(title, lines):
-    '''
-    update_oled() displays text on OLED screen
-    title: main title (bold)
-    lines: list of text lines to display
-    '''
-    if not oled_available:
-        return
-    try:
-        image = Image.new('1', (128, 64))
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((0, 0, 127, 63), outline=255)
-        
-        # Title
-        draw.text((2, 2), title, font=font, fill=255)
-        
-        # Content lines
-        y_pos = 16
-        for line in lines:
-            draw.text((4, y_pos), str(line), font=small_font, fill=255)
-            y_pos += 10
-        
-        display.image(image)
-        display.show()
-    except Exception as e:
-        pass
 
 #get configuration (audio settings etc.) from file
 settings_file = open('Config/settings.prt', 'r')
@@ -105,15 +102,8 @@ SAMPLEMAX = 0.9 * (2**15) #maximum possible value for an audio sample (little bi
 LENGTH = 0 #length of the first recording on track 1, all subsequent recordings quantized to a multiple of this.
 
 print(str(RATE) + ' ' +  str(CHUNK))
-print('NEW VERSION/nlatency correction (buffers): ' + str(LATENCY))
+print('NEW VERSION\nlatency correction (buffers): ' + str(LATENCY))
 print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
-
-update_oled('LOADING', [
-    f'Rate: {RATE} Hz',
-    f'Buffer: {CHUNK}',
-    f'Latency: {LATENCY}',
-    f'In: {INDEVICE} Out: {OUTDEVICE}'
-])
 
 silence = np.zeros([CHUNK], dtype = np.int16) #a buffer containing silence
 
@@ -124,6 +114,29 @@ output_volume = np.float16(1.0)
 #multiplying by up_ramp and down_ramp gives fade-in and fade-out
 down_ramp = np.linspace(1, 0, CHUNK)
 up_ramp = np.linspace(0, 1, CHUNK)
+
+def update_display(text, row=0):
+    '''Updates display (OLED or LCD) if available'''
+    if not display:
+        return
+    try:
+        if display_type == 'OLED':
+            # OLED: Draw text on image buffer
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            lines = [text[i:i+21] for i in range(0, len(text), 21)]
+            for i, line in enumerate(lines[:4]):
+                draw.text((0, i * 16), line, font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            # LCD: Position cursor and write
+            display.cursor_pos = (row, 0)
+            max_cols = 16 if hasattr(display, 'cols') and display.cols == 16 else 20
+            display.write_string(text.ljust(max_cols)[:max_cols])
+    except Exception as e:
+        print(f'Display error: {e}')
 
 def fade_in(buffer):
     '''
@@ -139,6 +152,22 @@ def fade_out(buffer):
     np.multiply(buffer, down_ramp, out = buffer, casting = 'unsafe')
 
 pa = pyaudio.PyAudio()
+
+# Display startup message
+if display:
+    try:
+        if display_type == 'OLED':
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            draw.text((30, 24), 'LOOPER', font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            display.clear()
+            display.write_string('LOOPER')
+    except Exception as e:
+        print(f'Display error: {e}')
 
 class audioloop:
     def __init__(self):
@@ -336,54 +365,46 @@ def update_volume():
     slow to run, so should be called on a different thread (e.g. a button callback function)
     '''
     global output_volume
-    peak = np.max(
-                  np.abs(
-                          loops[0].main_audio.astype(np.int32)[:][:]
-                        + loops[1].main_audio.astype(np.int32)[:][:]
-                        + loops[2].main_audio.astype(np.int32)[:][:]
-                        + loops[3].main_audio.astype(np.int32)[:][:]
-                        + loops[0].dub_audio.astype(np.int32)[:][:]
-                        + loops[1].dub_audio.astype(np.int32)[:][:]
-                        + loops[2].dub_audio.astype(np.int32)[:][:]
-                        + loops[3].dub_audio.astype(np.int32)[:][:]
-                        )
-                 )
-    print('peak = ' + str(peak))
-    if peak > SAMPLEMAX:
-        output_volume = SAMPLEMAX / peak
-    else:
-        output_volume = 1
-    print('output volume = ' + str(output_volume))
-    update_oled('MIXING', [
-        f'Peak: {peak}',
-        f'Volume: {output_volume:.3f}'
-    ])
+    try:
+        # Only calculate peak if loops are initialized to avoid accessing uninitialized data
+        if not any(loop.initialized for loop in loops):
+            return
+        
+        peak = np.max(
+                      np.abs(
+                              loops[0].main_audio.astype(np.int32)[:][:]
+                            + loops[1].main_audio.astype(np.int32)[:][:]
+                            + loops[2].main_audio.astype(np.int32)[:][:]
+                            + loops[3].main_audio.astype(np.int32)[:][:]
+                            + loops[0].dub_audio.astype(np.int32)[:][:]
+                            + loops[1].dub_audio.astype(np.int32)[:][:]
+                            + loops[2].dub_audio.astype(np.int32)[:][:]
+                            + loops[3].dub_audio.astype(np.int32)[:][:]
+                            )
+                     )
+        print('peak = ' + str(peak))
+        if peak > SAMPLEMAX:
+            output_volume = SAMPLEMAX / peak
+        else:
+            output_volume = 1
+        print('output volume = ' + str(output_volume))
+    except Exception as e:
+        print(f'Error in update_volume: {e}')
 
 def show_status():
     '''
     show_status() checks which loops are recording/playing and lights up LEDs accordingly
-    Also updates OLED display with current loop status
     '''
-    for i in range(4):
-        if loops[i].is_recording:
-            RECLEDS[i].on()
-        else:
-            RECLEDS[i].off()
-        if loops[i].is_playing:
-            PLAYLEDS[i].on()
-        else:
-            PLAYLEDS[i].off()
-    
-    # Update OLED display
-    status_lines = []
-    for i in range(4):
-        rec = 'R' if loops[i].is_recording else ' '
-        play = 'P' if loops[i].is_playing else ' '
-        wait = 'W' if loops[i].is_waiting else ' '
-        len_str = f'{loops[i].length}' if loops[i].length > 0 else '-'
-        status_lines.append(f'T{i+1}:[{rec}{play}{wait}] L:{len_str}')
-    
-    update_oled('STATUS', status_lines)
+    with led_update_lock:
+        for i in range(4):
+            if loops[i].is_recording:
+                RECLEDS[i].on()
+            else:
+                RECLEDS[i].off()
+            if loops[i].is_playing:
+                PLAYLEDS[i].on()
+            else:
+                PLAYLEDS[i].off()
 
 setup_is_recording = False #set to True when track 1 recording button is first pressed
 setup_donerecording = False #set to true when first track 1 recording is done
@@ -464,26 +485,20 @@ looping_stream = pa.open(
 time.sleep(3)
 #then we turn on all lights to indicate that looper is ready to start looping
 print('ready')
-update_oled('READY', [
-    'Press Track 1',
-    'Record Button',
-    'to start'
-])
 for led in RECLEDS:
     led.on()
 for led in PLAYLEDS:
     led.on()
 
 #once all LEDs are on, we wait for the master loop record button to be pressed
+# Wait a bit for GPIO to stabilize after LED changes
+time.sleep(0.3)
+print('Waiting for first button press...')
 RECBUTTONS[0].wait_for_press()
+print('Button pressed! Starting recording...')
 #when the button is pressed, set the flag... looping_callback will see this flag. Also start recording on track 1
 setup_is_recording = True
 loops[0].start_recording(prev_rec_buffer)
-
-update_oled('RECORDING', [
-    'Track 1',
-    'Recording...'
-])
 
 #turn off all LEDs except master loop record
 for i in range(1, 4):
@@ -493,19 +508,15 @@ for led in PLAYLEDS:
 
 #allow time for button release, otherwise pressing the button once will start and stop the recording
 time.sleep(0.5)
+print('Waiting for second button press to stop recording...')
 #now wait for button to be pressed again, then stop recording and initialize master loop
 RECBUTTONS[0].wait_for_press()
+print('Button pressed! Stopping recording...')
 setup_is_recording = False
 setup_donerecording = True
 print(LENGTH)
 loops[0].initialize()
 print('length is ' + str(LENGTH))
-
-update_oled('LOOPING', [
-    f'Loop Length: {LENGTH}',
-    'Press buttons',
-    'to record'
-])
 
 #stop recording on track 1, light LEDs appropriately, then allow time for button release
 loops[0].set_recording()
@@ -516,30 +527,123 @@ time.sleep(0.5)
 
 finished = False
 #calling finish() will set finished flag, allowing program to break from loop at end of script and exit
+jam_session_active = False  # Flag to prevent premature exit
 def finish():
     global finished
+    if not jam_session_active:
+        print('Ignoring finish - jam session not yet active')
+        return
     finished = True
 
 #restart_looper() restarts this python script
 def restart_looper():
+    if not jam_session_active:
+        print('Ignoring restart - jam session not yet active')
+        return
     pa.terminate() #needed to free audio device for reuse
     os.execlp('python3', 'python3', 'main.py') #replaces current process with a new instance of the same script
+
+# Wrapper functions for button callbacks to catch exceptions
+def safe_clear_or_undo(loop_index):
+    try:
+        print(f'DEBUG: clear_or_undo called for loop {loop_index}')
+        loops[loop_index].clear_or_undo()
+        show_status()
+    except Exception as e:
+        print(f'Error in clear_or_undo for loop {loop_index}: {e}')
+
+def safe_set_recording(loop_index):
+    try:
+        print(f'DEBUG: set_recording called for loop {loop_index}')
+        loops[loop_index].set_recording()
+        show_status()
+    except Exception as e:
+        print(f'Error in set_recording for loop {loop_index}: {e}')
+
+def safe_toggle_mute(loop_index):
+    try:
+        print(f'DEBUG: toggle_mute called for loop {loop_index}')
+        loops[loop_index].toggle_mute()
+        show_status()
+    except Exception as e:
+        print(f'Error in toggle_mute for loop {loop_index}: {e}')
+
+def safe_update_volume():
+    try:
+        update_volume()
+    except Exception as e:
+        print(f'Error in update_volume: {e}')
+
+def safe_finish():
+    try:
+        print('!!! FINISH CALLED - Exiting program !!!')
+        finish()
+    except Exception as e:
+        print(f'Error in finish: {e}')
+
+def safe_restart():
+    try:
+        print('!!! RESTART CALLED - Restarting program !!!')
+        restart_looper()
+    except Exception as e:
+        print(f'Error in restart_looper: {e}')
 
 #now defining functions of all the buttons during jam session...
 
 for i in range(4):
-    RECBUTTONS[i].when_held = loops[i].clear_or_undo
-    RECBUTTONS[i].when_pressed = loops[i].set_recording
-    RECBUTTONS[i].when_released = update_volume
-    PLAYBUTTONS[i].when_pressed = loops[i].toggle_mute
+    RECBUTTONS[i].when_held = lambda idx=i: safe_clear_or_undo(idx)
+    RECBUTTONS[i].when_pressed = lambda idx=i: safe_set_recording(idx)
+    RECBUTTONS[i].when_released = safe_update_volume
+    PLAYBUTTONS[i].when_pressed = lambda idx=i: safe_toggle_mute(idx)
 
-PLAYBUTTONS[3].when_held = finish
-PLAYBUTTONS[0].when_held = restart_looper
+# Wait for all buttons to be released before attaching finish/restart handlers
+time.sleep(0.5)
+print('Ready for jam session! Hold PLAYBUTTON 4 (GPIO 20) for 2 sec to exit, or PLAYBUTTON 1 (GPIO 19) to restart')
+
+# Don't attach finish/restart handlers yet - wait for jam session to stabilize
+jam_session_active = False
 
 #this while loop runs during the jam session.
-while not finished:
-    show_status()
-    time.sleep(0.1)
-
-pa.terminate()
-print('Done...')
+try:
+    # Wait a few loop iterations before enabling exit/restart to avoid spurious triggers
+    for _ in range(30):  # Wait 3 seconds (30 * 0.1)
+        show_status()
+        time.sleep(0.1)
+    
+    # Check button states before enabling exit/restart
+    print('Checking button states...')
+    stuck_buttons = []
+    for i in range(4):
+        if PLAYBUTTONS[i].is_pressed:
+            print(f'WARNING: PLAYBUTTON {i} (GPIO {[19,26,21,20][i]}) is stuck pressed!')
+            stuck_buttons.append(f'PLAY{i}')
+        if RECBUTTONS[i].is_pressed:
+            print(f'WARNING: RECBUTTON {i} (GPIO {[11,5,6,13][i]}) is stuck pressed!')
+            stuck_buttons.append(f'REC{i}')
+    
+    if stuck_buttons:
+        print(f'Stuck buttons detected: {", ".join(stuck_buttons)}')
+        print('Hardware issue detected - buttons may not work correctly')
+        print('Check your wiring: buttons should connect GPIO to GROUND when pressed')
+    
+    # Now safe to enable finish/restart (only if button 3 is not stuck)
+    jam_session_active = True
+    if not PLAYBUTTONS[3].is_pressed:
+        PLAYBUTTONS[3].when_held = safe_finish
+        print('Exit handler enabled on PLAYBUTTON 3')
+    else:
+        print('PLAYBUTTON 3 exit handler DISABLED (button stuck)')
+    PLAYBUTTONS[0].when_held = safe_restart
+    print('Restart handler enabled on PLAYBUTTON 0')
+    print('Program running - use CTRL+C to force exit')
+    
+    while not finished:
+        show_status()
+        time.sleep(0.1)
+except Exception as e:
+    print(f'Error during jam session: {e}')
+    import traceback
+    traceback.print_exc()
+finally:
+    pa.terminate()
+    print('Done...')
