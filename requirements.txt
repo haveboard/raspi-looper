@@ -1,0 +1,13 @@
+# Core audio and GPIO dependencies
+pyaudio
+numpy
+gpiozero
+lgpio
+
+# Optional display support (I2C)
+# For LCD (HD44780 with PCF8574 backpack) - requires 5V power
+RPLCD
+# For OLED (SSD1306) - works with 3.3V
+luma.oled
+# Image processing for OLED display
+pillow

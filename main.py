@@ -7,6 +7,7 @@ import time
 import os
 import threading
 from gpiozero import LED, Button
+
 # Try to use LGPIO pin factory for gpiozero if available
 from gpiozero import Device
 try:
@@ -22,16 +23,63 @@ hold_time_length = 2.0 #length in seconds to hold button before triggering held 
 # Thread lock for LED updates
 led_update_lock = threading.Lock()
 
+# Initialize display (supports both OLED and LCD) with error handling
+display = None
+display_type = None
+try:
+    # Try OLED first (SSD1306 128x64 I2C) - matches gpio_connections.txt
+    # Using luma.oled which directly uses smbus2 without Blinka
+    from luma.core.interface.serial import i2c
+    from luma.oled.device import ssd1306
+    from PIL import Image, ImageDraw, ImageFont
+    # Try I2C bus 1 (GPIO 2/3), then fallback to bus 20/21
+    for bus in [1, 20, 21]:
+        for addr in [0x3C, 0x3D]:
+            try:
+                serial = i2c(port=bus, address=addr)
+                display = ssd1306(serial)
+                display_type = 'OLED'
+                print(f'OLED display initialized on bus {bus} at 0x{addr:02X} (3.3V)')
+                break
+            except:
+                continue
+        if display:
+            break
+    if not display:
+        raise Exception("OLED not found on any bus")
+except Exception as e:
+    print(f'OLED not available: {e}')
+    try:
+        # Fallback to LCD (HD44780 via PCF8574 I2C) - needs 5V
+        from RPLCD.i2c import CharLCD
+        # Try both common I2C addresses on multiple buses
+        for bus in [1, 20, 21]:
+            for addr in [0x27, 0x3F]:
+                try:
+                    display = CharLCD('PCF8574', addr, port=bus, cols=16, rows=2)
+                    display_type = 'LCD'
+                    print(f'LCD display initialized on bus {bus} at 0x{addr:02X} (needs 5V)')
+                    break
+                except:
+                    continue
+            if display:
+                break
+    except Exception as e2:
+        print(f'LCD not available: {e2}')
+
+if not display:
+    print("WARNING: No display found - running without display")
+
 PLAYLEDS = (LED(12), LED(16), LED(4), LED(17))
 RECLEDS = (LED(27), LED(22), LED(10), LED(9))
-PLAYBUTTONS = (Button(19, bounce_time = debounce_length, hold_time = hold_time_length),
-              Button(26, bounce_time = debounce_length, hold_time = hold_time_length),
-              Button(21, bounce_time = debounce_length, hold_time = hold_time_length),
-              Button(20, bounce_time = debounce_length, hold_time = hold_time_length))
-RECBUTTONS = (Button(11, bounce_time = debounce_length, hold_time = hold_time_length),
-               Button(5, bounce_time = debounce_length, hold_time = hold_time_length),
-               Button(6, bounce_time = debounce_length, hold_time = hold_time_length),
-               Button(13, bounce_time = debounce_length, hold_time = hold_time_length))
+PLAYBUTTONS = (Button(11, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(5, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(6, bounce_time = debounce_length, hold_time = hold_time_length),
+              Button(13, bounce_time = debounce_length, hold_time = hold_time_length))
+RECBUTTONS = (Button(19, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(26, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(21, bounce_time = debounce_length, hold_time = hold_time_length),
+               Button(20, bounce_time = debounce_length, hold_time = hold_time_length))
 
 
 #get configuration (audio settings etc.) from file
@@ -67,6 +115,29 @@ output_volume = np.float16(1.0)
 down_ramp = np.linspace(1, 0, CHUNK)
 up_ramp = np.linspace(0, 1, CHUNK)
 
+def update_display(text, row=0):
+    '''Updates display (OLED or LCD) if available'''
+    if not display:
+        return
+    try:
+        if display_type == 'OLED':
+            # OLED: Draw text on image buffer
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            lines = [text[i:i+21] for i in range(0, len(text), 21)]
+            for i, line in enumerate(lines[:4]):
+                draw.text((0, i * 16), line, font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            # LCD: Position cursor and write
+            display.cursor_pos = (row, 0)
+            max_cols = 16 if hasattr(display, 'cols') and display.cols == 16 else 20
+            display.write_string(text.ljust(max_cols)[:max_cols])
+    except Exception as e:
+        print(f'Display error: {e}')
+
 def fade_in(buffer):
     '''
     fade_in() applies fade-in to a buffer
@@ -81,6 +152,22 @@ def fade_out(buffer):
     np.multiply(buffer, down_ramp, out = buffer, casting = 'unsafe')
 
 pa = pyaudio.PyAudio()
+
+# Display startup message
+if display:
+    try:
+        if display_type == 'OLED':
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            draw.text((30, 24), 'LOOPER', font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            display.clear()
+            display.write_string('LOOPER')
+    except Exception as e:
+        print(f'Display error: {e}')
 
 class audioloop:
     def __init__(self):
