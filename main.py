@@ -164,9 +164,9 @@ def update_display_status():
             draw = ImageDraw.Draw(image)
             font = ImageFont.load_default()
             
-            # Line 1: Loop time and position
+            # Line 1: Loop time and position with high precision
             if LENGTH > 0:
-                line1 = f"Loop: {loop_time:.1f}s"
+                line1 = f"Loop: {loop_time:.4f}s"
                 if loops[0].initialized:
                     line1 += f" @{loop_percent}%"
             else:
@@ -188,25 +188,25 @@ def update_display_status():
             if waiting_tracks > 0 and loops[0].initialized:
                 buffers_to_restart = LENGTH - loops[0].readp
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
-                line4 = f"Start in {time_to_restart:.1f}s"
+                line4 = f"Start in {time_to_restart:.4f}s"
                 draw.text((0, 48), line4, font=font, fill=255)
             elif loops[0].initialized:
-                line4 = f"Pos: {loop_position:.1f}s"
+                line4 = f"Pos: {loop_position:.4f}s"
                 draw.text((0, 48), line4, font=font, fill=255)
             
             display.image(image)
             display.show()
             
         elif display_type == 'LCD':
-            # LCD: 16x2, must be concise
+            # LCD: 16x2, must be concise (keep 1 decimal for space)
             # Don't use clear() - just overwrite with spaces for better reliability
             
             # Row 1: Loop time and position
             if LENGTH > 0:
                 if loops[0].initialized:
-                    row1 = f"L:{loop_time:.1f}s {loop_percent:3d}%"
+                    row1 = f"L:{loop_time:.4f}s {loop_percent:2d}%"
                 else:
-                    row1 = f"Rec {loop_time:.1f}s"
+                    row1 = f"Rec {loop_time:.4f}s"
             else:
                 row1 = "Ready"
             
@@ -218,7 +218,7 @@ def update_display_status():
             if waiting_tracks > 0 and loops[0].initialized:
                 buffers_to_restart = LENGTH - loops[0].readp
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
-                row2 = f"{track_status} >{time_to_restart:4.1f}s"
+                row2 = f"{track_status}>{time_to_restart:5.4f}"
             else:
                 row2 = f"T:{track_status}"
             
