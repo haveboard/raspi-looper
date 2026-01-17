@@ -23,6 +23,9 @@ hold_time_length = 2.0 #length in seconds to hold button before triggering held 
 # Thread lock for LED updates
 led_update_lock = threading.Lock()
 
+# Thread lock for display updates to prevent concurrent access
+display_update_lock = threading.Lock()
+
 # Initialize display (supports both OLED and LCD) with error handling
 display = None
 display_type = None
@@ -119,18 +122,29 @@ def update_display_status():
     '''Updates display with comprehensive loop and track status'''
     if not display:
         return
+    
+    # Use a lock to prevent concurrent display updates
+    if not display_update_lock.acquire(blocking=False):
+        return  # Skip update if another thread is already updating
+    
     try:
+        # Don't update if loops aren't defined yet
+        if 'loops' not in globals():
+            return
+            
         # Calculate loop position and timing
         loop_time = 0.0
         loop_position = 0.0
         loop_percent = 0
         if LENGTH > 0:
             loop_time = (LENGTH * CHUNK) / RATE  # Total loop time in seconds
-            if loops[0].initialized:
-                loop_position = (loops[0].readp * CHUNK) / RATE
-                loop_percent = int((loops[0].readp / LENGTH) * 100)
+            if loops[0].initialized and LENGTH > 0:
+                # Prevent division by zero and ensure valid readp
+                readp = max(0, min(loops[0].readp, LENGTH - 1))
+                loop_position = (readp * CHUNK) / RATE
+                loop_percent = int((readp / LENGTH) * 100)
         
-        # Build track status string
+        # Build track status string - ensure it's always 4 characters
         track_status = ""
         for i in range(4):
             if loops[i].is_recording:
@@ -185,7 +199,7 @@ def update_display_status():
             
         elif display_type == 'LCD':
             # LCD: 16x2, must be concise
-            display.clear()
+            # Don't use clear() - just overwrite with spaces for better reliability
             
             # Row 1: Loop time and position
             if LENGTH > 0:
@@ -194,9 +208,10 @@ def update_display_status():
                 else:
                     row1 = f"Rec {loop_time:.1f}s"
             else:
-                row1 = "Ready          "
-            display.cursor_pos = (0, 0)
-            display.write_string(row1[:16].ljust(16))
+                row1 = "Ready"
+            
+            # Ensure string is exactly 16 characters
+            row1 = str(row1)[:16].ljust(16)
             
             # Row 2: Track status or countdown
             waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
@@ -205,12 +220,23 @@ def update_display_status():
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
                 row2 = f"{track_status} >{time_to_restart:4.1f}s"
             else:
-                row2 = f"T:{track_status}        "
+                row2 = f"T:{track_status}"
+            
+            # Ensure string is exactly 16 characters
+            row2 = str(row2)[:16].ljust(16)
+            
+            # Write both rows with position setting for each
+            display.cursor_pos = (0, 0)
+            display.write_string(row1)
             display.cursor_pos = (1, 0)
-            display.write_string(row2[:16].ljust(16))
+            display.write_string(row2)
             
     except Exception as e:
         print(f'Display error: {e}')
+        import traceback
+        traceback.print_exc()
+    finally:
+        display_update_lock.release()
 
 def fade_in(buffer):
     '''
@@ -485,12 +511,12 @@ def show_status():
             else:
                 PLAYLEDS[i].off()
     
-    # Update display when LEDs change
+    # Update display when LEDs change (skip if display is busy)
     if display:
         try:
             update_display_status()
-        except:
-            pass  # Don't let display errors interrupt the program
+        except Exception as e:
+            print(f'Display error in show_status: {e}')  # Don't let display errors interrupt the program
 
 setup_is_recording = False #set to True when track 1 recording button is first pressed
 setup_donerecording = False #set to true when first track 1 recording is done
@@ -508,15 +534,16 @@ def looping_callback(in_data, frame_count, time_info, status):
     
     current_rec_buffer = np.right_shift(np.frombuffer(in_data, dtype = np.int16), 2) #some input attenuation for overdub headroom purposes
     
-    # Update display every ~10 buffers (about 2-3 times per second at typical settings)
+    # Update display periodically (less often for LCD to avoid timing issues)
     display_update_counter += 1
-    if display_update_counter >= 10:
+    update_interval = 30 if display_type == 'LCD' else 10  # LCD updates slower
+    if display_update_counter >= update_interval:
         display_update_counter = 0
         if display and setup_donerecording:  # Only update during active looping
             try:
                 update_display_status()
-            except:
-                pass  # Don't let display errors interrupt audio
+            except Exception as e:
+                print(f'Display update error in callback: {e}')  # Don't let display errors interrupt audio
     
     #SETUP: FIRST RECORDING
     #if setup is not done i.e. if the master loop hasn't been recorded to yet
