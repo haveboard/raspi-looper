@@ -1,0 +1,16 @@
+[Unit]
+Description=Raspi Looper 4-Track Audio Looper
+After=sound.target
+
+[Service]
+Type=simple
+User=havelooper
+WorkingDirectory=/home/havelooper/raspi-looper
+ExecStart=/usr/bin/python3 /home/havelooper/raspi-looper/main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

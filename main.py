@@ -65,7 +65,7 @@ except Exception as e:
         for bus in [1, 20, 21]:
             for addr in [0x27, 0x3F]:
                 try:
-                    display = CharLCD('PCF8574', addr, port=bus, cols=16, rows=2)
+                    display = CharLCD('PCF8574', addr, port=bus, cols=20, rows=4)
                     display_type = 'LCD'
                     print(f'LCD display initialized on bus {bus} at 0x{addr:02X} (needs 5V)')
                     break
@@ -239,46 +239,54 @@ def update_display_status():
             display.show()
             
         elif display_type == 'LCD':
-            # LCD: 16x2, must be concise (keep 1 decimal for space)
+            # LCD: 20x4, show comprehensive info
             # Don't use clear() - just overwrite with spaces for better reliability
             
             # Row 1: Loop time and position
             if LENGTH > 0:
                 if loops[0].initialized:
-                    row1 = f"L:{loop_time:.4f}s {loop_percent:2d}%"
+                    row1 = f"Loop:{loop_time:.4f}s {loop_percent:2d}%"
                 else:
-                    row1 = f"Rec {loop_time:.4f}s"
+                    row1 = f"Recording {loop_time:.4f}s"
             else:
-                row1 = "Ready"
+                row1 = "Ready to Loop"
+            row1 = str(row1)[:20].ljust(20)
             
-            # Ensure string is exactly 16 characters
-            row1 = str(row1)[:16].ljust(16)
+            # Row 2: Track status with detailed info
+            row2 = f"Trk:{track_status}"
+            row2 = str(row2)[:20].ljust(20)
             
-            # Row 2: Menu or countdown  
+            # Row 3: Countdown or buffer info
             waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
             if waiting_tracks > 0 and loops[0].initialized:
                 buffers_to_restart = LENGTH - loops[0].readp
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
-                row2 = f"{track_status}>{time_to_restart:5.4f}"
+                row3 = f"Next loop:{time_to_restart:6.4f}s"
             else:
-                # Show menu with highlighting
-                vol_pct = int(output_volume * 100)
-                clk_char = "*" if click_track_enabled else " "
-                if current_menu_index == 0:  # VOL selected
-                    row2 = f"[VOL{vol_pct:3d}] TR CL{clk_char}"
-                elif current_menu_index == 1:  # TRIM selected
-                    row2 = f" VOL{vol_pct:3d} [TR] CL{clk_char}"
-                else:  # CLK selected
-                    row2 = f" VOL{vol_pct:3d}  TR [CL{clk_char}]"
+                buf_pct = int((loops[0].readp / LENGTH * 100)) if LENGTH > 0 and loops[0].initialized else 0
+                row3 = f"Buf:{loops[0].readp}/{LENGTH} {buf_pct}%"
+            row3 = str(row3)[:20].ljust(20)
             
-            # Ensure string is exactly 16 characters
-            row2 = str(row2)[:16].ljust(16)
+            # Row 4: Menu with highlighting
+            vol_pct = int(output_volume * 100)
+            clk_char = "*" if click_track_enabled else " "
+            if current_menu_index == 0:  # VOL selected
+                row4 = f"[VOL:{vol_pct:3d}%] TR CLK{clk_char}"
+            elif current_menu_index == 1:  # TRIM selected
+                row4 = f" VOL:{vol_pct:3d}% [TR] CLK{clk_char}"
+            else:  # CLK selected
+                row4 = f" VOL:{vol_pct:3d}%  TR [CLK{clk_char}]"
+            row4 = str(row4)[:20].ljust(20)
             
-            # Write both rows with position setting for each
+            # Write all four rows with position setting for each
             display.cursor_pos = (0, 0)
             display.write_string(row1)
             display.cursor_pos = (1, 0)
             display.write_string(row2)
+            display.cursor_pos = (2, 0)
+            display.write_string(row3)
+            display.cursor_pos = (3, 0)
+            display.write_string(row4)
             
     except Exception as e:
         print(f'Display error: {e}')
@@ -316,9 +324,13 @@ if display:
         elif display_type == 'LCD':
             display.clear()
             display.cursor_pos = (0, 0)
-            display.write_string('RASPI LOOPER    ')
+            display.write_string('RASPI LOOPER        ')
             display.cursor_pos = (1, 0)
-            display.write_string('4-Track Ready   ')
+            display.write_string('4-Track Ready       ')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('Rotate to adjust    ')
     except Exception as e:
         print(f'Display error: {e}')
 
@@ -695,9 +707,13 @@ if display:
         elif display_type == 'LCD':
             display.clear()
             display.cursor_pos = (0, 0)
-            display.write_string('Press REC1 to   ')
+            display.write_string('Press REC1 to start ')
             display.cursor_pos = (1, 0)
-            display.write_string('start recording ')
+            display.write_string('recording first loop')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
     except Exception as e:
         print(f'Display error: {e}')
 
@@ -718,9 +734,13 @@ if display:
         elif display_type == 'LCD':
             display.clear()
             display.cursor_pos = (0, 0)
-            display.write_string('RECORDING...    ')
+            display.write_string('RECORDING...        ')
             display.cursor_pos = (1, 0)
-            display.write_string('Track 1 Active  ')
+            display.write_string('Track 1 Active      ')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
     except Exception as e:
         print(f'Display error: {e}')
 
@@ -752,9 +772,13 @@ if display:
             display.show()
         elif display_type == 'LCD':
             display.cursor_pos = (0, 0)
-            display.write_string('Recording T1... ')
+            display.write_string('Recording T1...     ')
             display.cursor_pos = (1, 0)
-            display.write_string('Press to finish ')
+            display.write_string('Press REC1 again to ')
+            display.cursor_pos = (2, 0)
+            display.write_string('finish recording    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
     except Exception as e:
         print(f'Display error: {e}')
 
@@ -775,9 +799,13 @@ if display:
             display.show()
         elif display_type == 'LCD':
             display.cursor_pos = (0, 0)
-            display.write_string('Initializing    ')
+            display.write_string('Initializing loop...') 
             display.cursor_pos = (1, 0)
-            display.write_string('Loop...         ')
+            display.write_string('Please wait         ')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
     except Exception as e:
         print(f'Display error: {e}')
 
@@ -885,16 +913,16 @@ def encoder_rotated():
         menu = menu_items[current_menu_index]
         
         if menu == 'VOL':
-            # Adjust output volume (0.1 to 1.5)
-            output_volume = np.clip(output_volume + (steps * 0.05), 0.1, 1.5)
+            # Adjust output volume (0.1 to 1.5) - finer steps
+            output_volume = np.clip(output_volume + (steps * 0.01), 0.1, 1.5)
             print(f'Volume: {output_volume:.2f} ({int(output_volume * 100)}%)')
             
         elif menu == 'TRIM':
             # Adjust loop length (only if initialized)
             if loops[0].initialized and LENGTH > 0:
                 old_length = LENGTH
-                # Adjust by 10 buffers per step
-                LENGTH = max(100, min(MAXLENGTH, LENGTH + (steps * 10)))
+                # Adjust by 2 buffers per step - finer control
+                LENGTH = max(100, min(MAXLENGTH, LENGTH + (steps * 2)))
                 
                 # Update all loops to new length
                 for loop in loops:
