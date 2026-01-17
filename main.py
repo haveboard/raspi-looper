@@ -6,7 +6,7 @@ import numpy as np
 import time
 import os
 import threading
-from gpiozero import LED, Button
+from gpiozero import LED, Button, RotaryEncoder
 
 # Try to use LGPIO pin factory for gpiozero if available
 from gpiozero import Device
@@ -25,6 +25,12 @@ led_update_lock = threading.Lock()
 
 # Thread lock for display updates to prevent concurrent access
 display_update_lock = threading.Lock()
+
+# Rotary encoder menu system
+menu_items = ['VOL', 'TRIM', 'CLK']
+current_menu_index = 0  # 0=VOL, 1=TRIM, 2=CLK
+menu_lock = threading.Lock()
+click_track_enabled = False
 
 # Initialize display (supports both OLED and LCD) with error handling
 display = None
@@ -84,6 +90,16 @@ RECBUTTONS = (Button(19, bounce_time = debounce_length, hold_time = hold_time_le
                Button(21, bounce_time = debounce_length, hold_time = hold_time_length),
                Button(20, bounce_time = debounce_length, hold_time = hold_time_length))
 
+# Rotary encoder for menu control (GPIO23=CLK, GPIO24=DT, GPIO25=SW)
+try:
+    encoder = RotaryEncoder(23, 24, bounce_time=0.002, max_steps=0)
+    encoder_button = Button(25, bounce_time=0.1)
+    print('Rotary encoder initialized on GPIO23/24/25')
+except Exception as e:
+    encoder = None
+    encoder_button = None
+    print(f'Rotary encoder not available: {e}')
+
 
 #get configuration (audio settings etc.) from file
 settings_file = open('Config/settings.prt', 'r')
@@ -109,6 +125,20 @@ print('NEW VERSION\nlatency correction (buffers): ' + str(LATENCY))
 print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
 
 silence = np.zeros([CHUNK], dtype = np.int16) #a buffer containing silence
+
+# Generate click track sound (1kHz beep for 50ms)
+click_duration_samples = int(0.05 * RATE)  # 50ms click
+click_buffers_needed = (click_duration_samples + CHUNK - 1) // CHUNK
+click_track = []
+for i in range(click_buffers_needed):
+    t = np.arange(i * CHUNK, min((i + 1) * CHUNK, click_duration_samples)) / RATE
+    if len(t) < CHUNK:
+        # Pad the last buffer
+        click_buffer = np.zeros(CHUNK, dtype=np.int16)
+        click_buffer[:len(t)] = (np.sin(2 * np.pi * 1000 * t[:len(t)]) * 10000).astype(np.int16)
+    else:
+        click_buffer = (np.sin(2 * np.pi * 1000 * t) * 10000).astype(np.int16)
+    click_track.append(click_buffer)
 
 #mixed output (sum of audio from tracks) is multiplied by output_volume before being played.
 #This is updated dynamically as max peak in resultant audio changes
@@ -184,14 +214,25 @@ def update_display_status():
             line3 = f"Act:{active_tracks} Rec:{recording_tracks} Wait:{waiting_tracks}"
             draw.text((0, 32), line3, font=font, fill=255)
             
-            # Line 4: Countdown for waiting tracks or playback position
+            # Line 4: Menu or countdown/position
             if waiting_tracks > 0 and loops[0].initialized:
+                # Show countdown when tracks are waiting
                 buffers_to_restart = LENGTH - loops[0].readp
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
                 line4 = f"Start in {time_to_restart:.4f}s"
                 draw.text((0, 48), line4, font=font, fill=255)
-            elif loops[0].initialized:
-                line4 = f"Pos: {loop_position:.4f}s"
+            else:
+                # Show menu: VOL TRIM CLK with current selection highlighted
+                menu_str = ""
+                for i, item in enumerate(menu_items):
+                    if i == current_menu_index:
+                        menu_str += f"[{item}] "
+                    else:
+                        menu_str += f" {item}  "
+                # Add volume and click status
+                vol_pct = int(output_volume * 100)
+                clk_status = "ON" if click_track_enabled else "OFF"
+                line4 = f"{menu_str.strip()}"
                 draw.text((0, 48), line4, font=font, fill=255)
             
             display.image(image)
@@ -213,14 +254,22 @@ def update_display_status():
             # Ensure string is exactly 16 characters
             row1 = str(row1)[:16].ljust(16)
             
-            # Row 2: Track status or countdown
+            # Row 2: Menu or countdown  
             waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
             if waiting_tracks > 0 and loops[0].initialized:
                 buffers_to_restart = LENGTH - loops[0].readp
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
                 row2 = f"{track_status}>{time_to_restart:5.4f}"
             else:
-                row2 = f"T:{track_status}"
+                # Show menu with highlighting
+                vol_pct = int(output_volume * 100)
+                clk_char = "*" if click_track_enabled else " "
+                if current_menu_index == 0:  # VOL selected
+                    row2 = f"[VOL{vol_pct:3d}] TR CL{clk_char}"
+                elif current_menu_index == 1:  # TRIM selected
+                    row2 = f" VOL{vol_pct:3d} [TR] CL{clk_char}"
+                else:  # CLK selected
+                    row2 = f" VOL{vol_pct:3d}  TR [CL{clk_char}]"
             
             # Ensure string is exactly 16 characters
             row2 = str(row2)[:16].ljust(16)
@@ -588,6 +637,15 @@ def looping_callback(in_data, frame_count, time_info, status):
                                  + loops[2].read().astype(np.int32)[:]
                                  + loops[3].read().astype(np.int32)[:]
                                  ), output_volume, out= None, casting = 'unsafe').astype(np.int16)
+    
+    # Add click track if enabled and loop is initialized
+    if click_track_enabled and loops[0].initialized and loops[0].readp < len(click_track):
+        # Mix in click track at the start of the loop
+        play_buffer[:] = np.clip(
+            play_buffer[:].astype(np.int32) + click_track[loops[0].readp].astype(np.int32),
+            -32768, 32767
+        ).astype(np.int16)
+    
     #current buffer will serve as previous in next iteration
     prev_rec_buffer = np.copy(current_rec_buffer)
     #play mixed audio and move on to next iteration
@@ -799,6 +857,72 @@ def safe_restart():
     except Exception as e:
         print(f'Error in restart_looper: {e}')
 
+# Rotary encoder callback functions
+def encoder_button_pressed():
+    '''Cycle through menu items when encoder button is pressed'''
+    global current_menu_index
+    with menu_lock:
+        current_menu_index = (current_menu_index + 1) % len(menu_items)
+        print(f'Menu: {menu_items[current_menu_index]} selected')
+    if display:
+        try:
+            update_display_status()
+        except:
+            pass
+
+def encoder_rotated():
+    '''Handle encoder rotation based on current menu item'''
+    global output_volume, LENGTH, click_track_enabled
+    
+    if not encoder:
+        return
+    
+    steps = encoder.steps
+    if steps == 0:
+        return
+    
+    with menu_lock:
+        menu = menu_items[current_menu_index]
+        
+        if menu == 'VOL':
+            # Adjust output volume (0.1 to 1.5)
+            output_volume = np.clip(output_volume + (steps * 0.05), 0.1, 1.5)
+            print(f'Volume: {output_volume:.2f} ({int(output_volume * 100)}%)')
+            
+        elif menu == 'TRIM':
+            # Adjust loop length (only if initialized)
+            if loops[0].initialized and LENGTH > 0:
+                old_length = LENGTH
+                # Adjust by 10 buffers per step
+                LENGTH = max(100, min(MAXLENGTH, LENGTH + (steps * 10)))
+                
+                # Update all loops to new length
+                for loop in loops:
+                    if loop.initialized:
+                        loop.length = LENGTH
+                        # Ensure readp/writep are within bounds
+                        loop.readp = loop.readp % LENGTH
+                        loop.writep = loop.writep % LENGTH
+                
+                print(f'Loop length: {old_length} -> {LENGTH} buffers ({(LENGTH * CHUNK) / RATE:.4f}s)')
+            else:
+                print('TRIM: No loop to trim (record first loop)')
+                
+        elif menu == 'CLK':
+            # Toggle click track
+            click_track_enabled = not click_track_enabled
+            print(f'Click track: {"ON" if click_track_enabled else "OFF"}')
+    
+    # Reset encoder steps
+    encoder.steps = 0
+    
+    # Update display
+    if display:
+        try:
+            update_display_status()
+        except:
+            pass
+
 #now defining functions of all the buttons during jam session...
 
 for i in range(4):
@@ -806,6 +930,12 @@ for i in range(4):
     RECBUTTONS[i].when_pressed = lambda idx=i: safe_set_recording(idx)
     RECBUTTONS[i].when_released = safe_update_volume
     PLAYBUTTONS[i].when_pressed = lambda idx=i: safe_toggle_mute(idx)
+
+# Setup rotary encoder callbacks if available
+if encoder and encoder_button:
+    encoder_button.when_pressed = encoder_button_pressed
+    # Poll encoder in main loop since when_rotated isn't reliable
+    print('Rotary encoder menu enabled: Press button to cycle menu, rotate to adjust')
 
 # Wait for all buttons to be released before attaching finish/restart handlers
 time.sleep(0.5)
@@ -850,6 +980,9 @@ try:
     
     while not finished:
         show_status()
+        # Poll rotary encoder
+        if encoder:
+            encoder_rotated()
         time.sleep(0.1)
 except Exception as e:
     print(f'Error during jam session: {e}')
