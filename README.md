@@ -29,6 +29,14 @@ Simple 4 track looper for Raspberry Pi. Uses pyaudio.
 - SDA → GPIO2 (Pin 3)
 - SCL → GPIO3 (Pin 5)
 
+#### Rotary Encoder Wiring (Optional)
+**KY-040 or similar rotary encoder:**
+- CLK (A) → GPIO23
+- DT (B) → GPIO24
+- SW (Button) → GPIO25
+- + → 3.3V
+- GND → Ground
+
 See GPIO connections table and wiring diagram.
 
 ## Software Setup
@@ -89,19 +97,24 @@ See GPIO connections table and wiring diagram.
 - Hold Track 4 Play Button to exit the looper script.
 
 ### Rotary Encoder Menu (Optional)
-If you have a rotary encoder connected (GPIO 23/24/25):
+If you have a rotary encoder connected (GPIO23/24/25):
 - **Press button** to cycle through menu items (VOL/TRIM/CLK)
 - **Rotate** to adjust the selected parameter:
   - **VOL**: Adjust output volume (10% to 150%)
-  - **TRIM**: Fine-tune loop length (after recording first loop)
+  - **TRIM**: Fine-tune loop length in milliseconds (±100ms range after recording first loop)
   - **CLK**: Toggle click track on/off
+
+The encoder is polled continuously in the main loop for responsive control without relying on interrupts.
 
 ## Features
 - 4 independent audio tracks with overdubbing
 - Automatic volume adjustment to prevent clipping
 - Undo last overdub per track
 - Optional I2C display support (OLED 128x64 or LCD 20x4)
-- Optional rotary encoder for volume, trim, and click track control
+- Optional rotary encoder menu for real-time control:
+  - Volume adjustment (10% to 150%)
+  - Loop trim for fine-tuning timing (±100ms)
+  - Click track toggle
 - Latency compensation
 - Fade in/out for smooth loop transitions
 - Auto-start on boot with systemd service
@@ -121,8 +134,17 @@ sudo systemctl enable raspi-looper   # Re-enable autostart on boot
 
 **View Logs:**
 ```bash
-sudo journalctl -u raspi-looper -f   # View live logs
-sudo journalctl -u raspi-looper -n 50  # View last 50 lines
+# Connect to live logs (follow mode - shows real-time output)
+sudo journalctl -u raspi-looper -f
+
+# View last 50 lines
+sudo journalctl -u raspi-looper -n 50
+
+# View logs since boot
+sudo journalctl -u raspi-looper -b
+
+# View logs from specific time
+sudo journalctl -u raspi-looper --since "10 minutes ago"
 ```
 
 **Manual Run (for testing):**
