@@ -29,6 +29,14 @@ Simple 4 track looper for Raspberry Pi. Uses pyaudio.
 - SDA → GPIO2 (Pin 3)
 - SCL → GPIO3 (Pin 5)
 
+#### Rotary Encoder Wiring (Optional)
+**KY-040 or similar rotary encoder:**
+- CLK (A) → GPIO23
+- DT (B) → GPIO24
+- SW (Button) → GPIO25
+- + → 3.3V
+- GND → Ground
+
 See GPIO connections table and wiring diagram.
 
 ## Software Setup
@@ -60,7 +68,11 @@ See GPIO connections table and wiring diagram.
 
 5. Configure audio devices by running `python3 settings.py`
 
-6. Set main.py to start on boot (run main.py as sudo)
+6. **(Optional)** Install as a system service to auto-start on boot:
+   ```bash
+   ./install-service.sh
+   ```
+   This will configure the looper to start automatically on boot and restart if it crashes.
 
 ### Optional/Troubleshooting
 - Uninstall unnecessary software, disable GUI (speed up boot time)
@@ -84,17 +96,73 @@ See GPIO connections table and wiring diagram.
 - Hold Track 1 Play Button to start new session.
 - Hold Track 4 Play Button to exit the looper script.
 
+### Rotary Encoder Menu (Optional)
+If you have a rotary encoder connected (GPIO23/24/25):
+- **Press button** to cycle through menu items (VOL/TRIM/CLK)
+- **Rotate** to adjust the selected parameter:
+  - **VOL**: Adjust output volume (10% to 150%)
+  - **TRIM**: Fine-tune loop length in milliseconds (±100ms range after recording first loop)
+  - **CLK**: Toggle click track on/off
+
+The encoder is polled continuously in the main loop for responsive control without relying on interrupts.
+
 ## Features
 - 4 independent audio tracks with overdubbing
 - Automatic volume adjustment to prevent clipping
 - Undo last overdub per track
-- Optional I2C display support (OLED or LCD)
+- Optional I2C display support (OLED 128x64 or LCD 20x4)
+  - **Optimized display updates**: Reduced update frequency (100 buffers for LCD, 50 for OLED) to prevent audio stuttering
+  - **Block position indicator**: Shows loop position as 4 blocks representing quarters (each block = 25% of loop)
+  - **Streamlined info**: Removed buffer counts and percentages for cleaner, faster display
+- Optional rotary encoder menu for real-time control:
+  - Volume adjustment (10% to 150%)
+  - Loop trim for fine-tuning timing (±100ms)
+  - Click track toggle
 - Latency compensation
 - Fade in/out for smooth loop transitions
+- Auto-start on boot with systemd service
+
+## System Service Management
+After installing with `./install-service.sh`, use these commands:
+
+**Service Control:**
+```bash
+sudo systemctl status raspi-looper   # Check if running
+sudo systemctl stop raspi-looper     # Stop service
+sudo systemctl start raspi-looper    # Start service
+sudo systemctl restart raspi-looper  # Restart service
+sudo systemctl disable raspi-looper  # Disable autostart on boot
+sudo systemctl enable raspi-looper   # Re-enable autostart on boot
+```
+
+**View Logs:**
+```bash
+# Connect to live logs (follow mode - shows real-time output)
+sudo journalctl -u raspi-looper -f
+
+# View last 50 lines
+sudo journalctl -u raspi-looper -n 50
+
+# View logs since boot
+sudo journalctl -u raspi-looper -b
+
+# View logs from specific time
+sudo journalctl -u raspi-looper --since "10 minutes ago"
+```
+
+**Manual Run (for testing):**
+```bash
+# Stop the service first
+sudo systemctl stop raspi-looper
+# Run manually
+cd ~/raspi-looper
+python3 main.py
+```
 
 ## Notes
 - Display support is optional - the looper works fine without it
-- Supports both OLED (3.3V) and LCD (5V) displays automatically
+- Supports both OLED (3.3V) and LCD 20x4 (5V) displays automatically
+- Rotary encoder is optional for volume/trim/click control
 - GPIO pin assignments corrected from original - see gpio_connections.txt
 - Button mapping: PLAY and REC buttons were swapped in code vs. documentation
 

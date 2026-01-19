@@ -23,4 +23,7 @@ Raspberry Pi looper pin connections:
 |   Button   |  Track 2 Rec   |   GPIO26  |
 |   Button   |  Track 3 Rec   |   GPIO21  |
 |   Button   |  Track 4 Rec   |   GPIO20  |
+|  Encoder   |  CLK (A)       |   GPIO23  |
+|  Encoder   |  DT (B)        |   GPIO24  |
+|  Encoder   |  SW (Button)   |   GPIO25  |
 +------------+----------------+-----------+

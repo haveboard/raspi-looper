@@ -6,7 +6,7 @@ import numpy as np
 import time
 import os
 import threading
-from gpiozero import LED, Button
+from gpiozero import LED, Button, RotaryEncoder
 
 # Try to use LGPIO pin factory for gpiozero if available
 from gpiozero import Device
@@ -22,6 +22,15 @@ hold_time_length = 2.0 #length in seconds to hold button before triggering held 
 
 # Thread lock for LED updates
 led_update_lock = threading.Lock()
+
+# Thread lock for display updates to prevent concurrent access
+display_update_lock = threading.Lock()
+
+# Rotary encoder menu system
+menu_items = ['VOL', 'TRIM', 'CLK']
+current_menu_index = 0  # 0=VOL, 1=TRIM, 2=CLK
+menu_lock = threading.Lock()
+click_track_enabled = False
 
 # Initialize display (supports both OLED and LCD) with error handling
 display = None
@@ -56,7 +65,7 @@ except Exception as e:
         for bus in [1, 20, 21]:
             for addr in [0x27, 0x3F]:
                 try:
-                    display = CharLCD('PCF8574', addr, port=bus, cols=16, rows=2)
+                    display = CharLCD('PCF8574', addr, port=bus, cols=20, rows=4)
                     display_type = 'LCD'
                     print(f'LCD display initialized on bus {bus} at 0x{addr:02X} (needs 5V)')
                     break
@@ -80,6 +89,16 @@ RECBUTTONS = (Button(19, bounce_time = debounce_length, hold_time = hold_time_le
                Button(26, bounce_time = debounce_length, hold_time = hold_time_length),
                Button(21, bounce_time = debounce_length, hold_time = hold_time_length),
                Button(20, bounce_time = debounce_length, hold_time = hold_time_length))
+
+# Rotary encoder for menu control (GPIO23=CLK, GPIO24=DT, GPIO25=SW)
+try:
+    encoder = RotaryEncoder(23, 24, bounce_time=0.002, max_steps=0)
+    encoder_button = Button(25, bounce_time=0.1)
+    print('Rotary encoder initialized on GPIO23/24/25')
+except Exception as e:
+    encoder = None
+    encoder_button = None
+    print(f'Rotary encoder not available: {e}')
 
 
 #get configuration (audio settings etc.) from file
@@ -107,6 +126,20 @@ print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
 
 silence = np.zeros([CHUNK], dtype = np.int16) #a buffer containing silence
 
+# Generate click track sound (1kHz beep for 50ms)
+click_duration_samples = int(0.05 * RATE)  # 50ms click
+click_buffers_needed = (click_duration_samples + CHUNK - 1) // CHUNK
+click_track = []
+for i in range(click_buffers_needed):
+    t = np.arange(i * CHUNK, min((i + 1) * CHUNK, click_duration_samples)) / RATE
+    if len(t) < CHUNK:
+        # Pad the last buffer
+        click_buffer = np.zeros(CHUNK, dtype=np.int16)
+        click_buffer[:len(t)] = (np.sin(2 * np.pi * 1000 * t[:len(t)]) * 10000).astype(np.int16)
+    else:
+        click_buffer = (np.sin(2 * np.pi * 1000 * t) * 10000).astype(np.int16)
+    click_track.append(click_buffer)
+
 #mixed output (sum of audio from tracks) is multiplied by output_volume before being played.
 #This is updated dynamically as max peak in resultant audio changes
 output_volume = np.float16(1.0)
@@ -115,28 +148,166 @@ output_volume = np.float16(1.0)
 down_ramp = np.linspace(1, 0, CHUNK)
 up_ramp = np.linspace(0, 1, CHUNK)
 
-def update_display(text, row=0):
-    '''Updates display (OLED or LCD) if available'''
+def update_display_status():
+    '''Updates display with comprehensive loop and track status'''
     if not display:
         return
+    
+    # Use a lock to prevent concurrent display updates
+    if not display_update_lock.acquire(blocking=False):
+        return  # Skip update if another thread is already updating
+    
     try:
+        # Don't update if loops aren't defined yet
+        if 'loops' not in globals():
+            return
+            
+        # Calculate loop position and timing
+        loop_time = 0.0
+        loop_position = 0.0
+        loop_percent = 0
+        if LENGTH > 0:
+            loop_time = (LENGTH * CHUNK) / RATE  # Total loop time in seconds
+            if loops[0].initialized and LENGTH > 0:
+                # Prevent division by zero and ensure valid readp
+                readp = max(0, min(loops[0].readp, LENGTH - 1))
+                loop_position = (readp * CHUNK) / RATE
+                loop_percent = int((readp / LENGTH) * 100)
+        
+        # Build track status string - ensure it's always 4 characters
+        track_status = ""
+        for i in range(4):
+            if loops[i].is_recording:
+                track_status += "R"
+            elif loops[i].is_waiting:
+                track_status += "W"
+            elif loops[i].is_playing:
+                track_status += "P"
+            elif loops[i].initialized and not loops[i].is_playing:
+                track_status += "M"  # Muted
+            else:
+                track_status += "-"
+        
         if display_type == 'OLED':
-            # OLED: Draw text on image buffer
+            # OLED: 128x64 pixels, can show more info
             image = Image.new('1', (128, 64))
             draw = ImageDraw.Draw(image)
             font = ImageFont.load_default()
-            lines = [text[i:i+21] for i in range(0, len(text), 21)]
-            for i, line in enumerate(lines[:4]):
-                draw.text((0, i * 16), line, font=font, fill=255)
+            
+            # Line 1: Loop time (no percentage)
+            if LENGTH > 0:
+                line1 = f"Loop: {loop_time:.4f}s"
+            else:
+                line1 = "Ready to record"
+            draw.text((0, 0), line1, font=font, fill=255)
+            
+            # Line 2: Track status (R=Recording, W=Waiting, P=Playing, M=Muted, -=Empty)
+            line2 = f"T1234: {track_status}"
+            draw.text((0, 16), line2, font=font, fill=255)
+            
+            # Line 3: Position blocks (4 blocks showing quarters)
+            if loops[0].initialized and LENGTH > 0:
+                # Calculate which quarter we're in (0-3)
+                quarter = min(3, int((loops[0].readp / LENGTH) * 4))
+                # Use block character (█) for current quarter
+                blocks = ""
+                for i in range(4):
+                    blocks += "█" if i <= quarter else "▯"
+                line3 = f"Position: {blocks}"
+            else:
+                active_tracks = sum(1 for loop in loops if loop.initialized)
+                recording_tracks = sum(1 for loop in loops if loop.is_recording)
+                waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
+                line3 = f"Act:{active_tracks} Rec:{recording_tracks} Wait:{waiting_tracks}"
+            draw.text((0, 32), line3, font=font, fill=255)
+            
+            # Line 4: Menu or countdown/position
+            if waiting_tracks > 0 and loops[0].initialized:
+                # Show countdown when tracks are waiting
+                buffers_to_restart = LENGTH - loops[0].readp
+                time_to_restart = (buffers_to_restart * CHUNK) / RATE
+                line4 = f"Start in {time_to_restart:.4f}s"
+                draw.text((0, 48), line4, font=font, fill=255)
+            else:
+                # Show menu: VOL TRIM CLK with current selection highlighted
+                menu_str = ""
+                for i, item in enumerate(menu_items):
+                    if i == current_menu_index:
+                        menu_str += f"[{item}] "
+                    else:
+                        menu_str += f" {item}  "
+                # Add volume and click status
+                vol_pct = int(output_volume * 100)
+                clk_status = "ON" if click_track_enabled else "OFF"
+                line4 = f"{menu_str.strip()}"
+                draw.text((0, 48), line4, font=font, fill=255)
+            
             display.image(image)
             display.show()
+            
         elif display_type == 'LCD':
-            # LCD: Position cursor and write
-            display.cursor_pos = (row, 0)
-            max_cols = 16 if hasattr(display, 'cols') and display.cols == 16 else 20
-            display.write_string(text.ljust(max_cols)[:max_cols])
+            # LCD: 20x4, show comprehensive info
+            # Don't use clear() - just overwrite with spaces for better reliability
+            
+            # Row 1: Loop time (no percentage)
+            if LENGTH > 0:
+                if loops[0].initialized:
+                    row1 = f"Loop:{loop_time:.4f}s"
+                else:
+                    row1 = f"Recording {loop_time:.4f}s"
+            else:
+                row1 = "Ready to Loop"
+            row1 = str(row1)[:20].ljust(20)
+            
+            # Row 2: Track status with detailed info
+            row2 = f"Trk:{track_status}"
+            row2 = str(row2)[:20].ljust(20)
+            
+            # Row 3: Position blocks or countdown
+            waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
+            if waiting_tracks > 0 and loops[0].initialized:
+                buffers_to_restart = LENGTH - loops[0].readp
+                time_to_restart = (buffers_to_restart * CHUNK) / RATE
+                row3 = f"Next loop:{time_to_restart:6.4f}s"
+            elif loops[0].initialized and LENGTH > 0:
+                # Calculate which quarter we're in (0-3)
+                quarter = min(3, int((loops[0].readp / LENGTH) * 4))
+                # Use block character for current quarter
+                blocks = ""
+                for i in range(4):
+                    blocks += chr(0xFF) if i <= quarter else chr(0xA1)  # Full block vs light block
+                row3 = f"Pos: {blocks}"
+            else:
+                row3 = "No loop playing"
+            row3 = str(row3)[:20].ljust(20)
+            
+            # Row 4: Menu with highlighting
+            vol_pct = int(output_volume * 100)
+            clk_char = "*" if click_track_enabled else " "
+            if current_menu_index == 0:  # VOL selected
+                row4 = f"[VOL:{vol_pct:3d}%] TR CLK{clk_char}"
+            elif current_menu_index == 1:  # TRIM selected
+                row4 = f" VOL:{vol_pct:3d}% [TR] CLK{clk_char}"
+            else:  # CLK selected
+                row4 = f" VOL:{vol_pct:3d}%  TR [CLK{clk_char}]"
+            row4 = str(row4)[:20].ljust(20)
+            
+            # Write all four rows with position setting for each
+            display.cursor_pos = (0, 0)
+            display.write_string(row1)
+            display.cursor_pos = (1, 0)
+            display.write_string(row2)
+            display.cursor_pos = (2, 0)
+            display.write_string(row3)
+            display.cursor_pos = (3, 0)
+            display.write_string(row4)
+            
     except Exception as e:
         print(f'Display error: {e}')
+        import traceback
+        traceback.print_exc()
+    finally:
+        display_update_lock.release()
 
 def fade_in(buffer):
     '''
@@ -160,12 +331,20 @@ if display:
             image = Image.new('1', (128, 64))
             draw = ImageDraw.Draw(image)
             font = ImageFont.load_default()
-            draw.text((30, 24), 'LOOPER', font=font, fill=255)
+            draw.text((30, 16), 'RASPI LOOPER', font=font, fill=255)
+            draw.text((20, 32), '4-Track Ready', font=font, fill=255)
             display.image(image)
             display.show()
         elif display_type == 'LCD':
             display.clear()
-            display.write_string('LOOPER')
+            display.cursor_pos = (0, 0)
+            display.write_string('RASPI LOOPER        ')
+            display.cursor_pos = (1, 0)
+            display.write_string('4-Track Ready       ')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('Rotate to adjust    ')
     except Exception as e:
         print(f'Display error: {e}')
 
@@ -394,6 +573,7 @@ def update_volume():
 def show_status():
     '''
     show_status() checks which loops are recording/playing and lights up LEDs accordingly
+    Also updates display with current status
     '''
     with led_update_lock:
         for i in range(4):
@@ -405,11 +585,19 @@ def show_status():
                 PLAYLEDS[i].on()
             else:
                 PLAYLEDS[i].off()
+    
+    # Update display when LEDs change (skip if display is busy)
+    if display:
+        try:
+            update_display_status()
+        except Exception as e:
+            print(f'Display error in show_status: {e}')  # Don't let display errors interrupt the program
 
 setup_is_recording = False #set to True when track 1 recording button is first pressed
 setup_donerecording = False #set to true when first track 1 recording is done
 
 play_buffer = np.zeros([CHUNK], dtype = np.int16) #buffer to hold mixed audio from all 4 tracks
+display_update_counter = 0  # Counter to throttle display updates
 
 def looping_callback(in_data, frame_count, time_info, status):
     global play_buffer
@@ -417,7 +605,21 @@ def looping_callback(in_data, frame_count, time_info, status):
     global setup_donerecording
     global setup_is_recording
     global LENGTH
+    global display_update_counter
+    
     current_rec_buffer = np.right_shift(np.frombuffer(in_data, dtype = np.int16), 2) #some input attenuation for overdub headroom purposes
+    
+    # Update display periodically (less often for LCD to avoid timing issues)
+    display_update_counter += 1
+    update_interval = 100 if display_type == 'LCD' else 50  # Much slower updates to prevent stuttering
+    if display_update_counter >= update_interval:
+        display_update_counter = 0
+        if display and setup_donerecording:  # Only update during active looping
+            try:
+                update_display_status()
+            except Exception as e:
+                print(f'Display update error in callback: {e}')  # Don't let display errors interrupt audio
+    
     #SETUP: FIRST RECORDING
     #if setup is not done i.e. if the master loop hasn't been recorded to yet
     if not setup_donerecording:
@@ -461,6 +663,15 @@ def looping_callback(in_data, frame_count, time_info, status):
                                  + loops[2].read().astype(np.int32)[:]
                                  + loops[3].read().astype(np.int32)[:]
                                  ), output_volume, out= None, casting = 'unsafe').astype(np.int16)
+    
+    # Add click track if enabled and loop is initialized
+    if click_track_enabled and loops[0].initialized and loops[0].readp < len(click_track):
+        # Mix in click track at the start of the loop
+        play_buffer[:] = np.clip(
+            play_buffer[:].astype(np.int32) + click_track[loops[0].readp].astype(np.int32),
+            -32768, 32767
+        ).astype(np.int16)
+    
     #current buffer will serve as previous in next iteration
     prev_rec_buffer = np.copy(current_rec_buffer)
     #play mixed audio and move on to next iteration
@@ -494,8 +705,59 @@ for led in PLAYLEDS:
 # Wait a bit for GPIO to stabilize after LED changes
 time.sleep(0.3)
 print('Waiting for first button press...')
+
+# Show ready message on display
+if display:
+    try:
+        if display_type == 'OLED':
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            draw.text((10, 8), 'Press RECORD 1', font=font, fill=255)
+            draw.text((10, 24), 'to start first', font=font, fill=255)
+            draw.text((10, 40), 'loop recording', font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            display.clear()
+            display.cursor_pos = (0, 0)
+            display.write_string('Press REC1 to start ')
+            display.cursor_pos = (1, 0)
+            display.write_string('recording first loop')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
+    except Exception as e:
+        print(f'Display error: {e}')
+
 RECBUTTONS[0].wait_for_press()
 print('Button pressed! Starting recording...')
+
+# Show recording message
+if display:
+    try:
+        if display_type == 'OLED':
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            draw.text((20, 16), 'RECORDING...', font=font, fill=255)
+            draw.text((10, 32), 'Track 1 Active', font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            display.clear()
+            display.cursor_pos = (0, 0)
+            display.write_string('RECORDING...        ')
+            display.cursor_pos = (1, 0)
+            display.write_string('Track 1 Active      ')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
+    except Exception as e:
+        print(f'Display error: {e}')
+
 #when the button is pressed, set the flag... looping_callback will see this flag. Also start recording on track 1
 setup_is_recording = True
 loops[0].start_recording(prev_rec_buffer)
@@ -509,9 +771,58 @@ for led in PLAYLEDS:
 #allow time for button release, otherwise pressing the button once will start and stop the recording
 time.sleep(0.5)
 print('Waiting for second button press to stop recording...')
+
+# Update display to show waiting for stop
+if display:
+    try:
+        if display_type == 'OLED':
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            draw.text((15, 8), 'RECORDING T1...', font=font, fill=255)
+            draw.text((5, 24), 'Press REC1 again', font=font, fill=255)
+            draw.text((25, 40), 'to finish', font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            display.cursor_pos = (0, 0)
+            display.write_string('Recording T1...     ')
+            display.cursor_pos = (1, 0)
+            display.write_string('Press REC1 again to ')
+            display.cursor_pos = (2, 0)
+            display.write_string('finish recording    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
+    except Exception as e:
+        print(f'Display error: {e}')
+
 #now wait for button to be pressed again, then stop recording and initialize master loop
 RECBUTTONS[0].wait_for_press()
 print('Button pressed! Stopping recording...')
+
+# Show loop initialization message
+if display:
+    try:
+        if display_type == 'OLED':
+            image = Image.new('1', (128, 64))
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.load_default()
+            draw.text((15, 16), 'Initializing', font=font, fill=255)
+            draw.text((25, 32), 'Loop...', font=font, fill=255)
+            display.image(image)
+            display.show()
+        elif display_type == 'LCD':
+            display.cursor_pos = (0, 0)
+            display.write_string('Initializing loop...') 
+            display.cursor_pos = (1, 0)
+            display.write_string('Please wait         ')
+            display.cursor_pos = (2, 0)
+            display.write_string('                    ')
+            display.cursor_pos = (3, 0)
+            display.write_string('                    ')
+    except Exception as e:
+        print(f'Display error: {e}')
+
 setup_is_recording = False
 setup_donerecording = True
 print(LENGTH)
@@ -588,6 +899,72 @@ def safe_restart():
     except Exception as e:
         print(f'Error in restart_looper: {e}')
 
+# Rotary encoder callback functions
+def encoder_button_pressed():
+    '''Cycle through menu items when encoder button is pressed'''
+    global current_menu_index
+    with menu_lock:
+        current_menu_index = (current_menu_index + 1) % len(menu_items)
+        print(f'Menu: {menu_items[current_menu_index]} selected')
+    if display:
+        try:
+            update_display_status()
+        except:
+            pass
+
+def encoder_rotated():
+    '''Handle encoder rotation based on current menu item'''
+    global output_volume, LENGTH, click_track_enabled
+    
+    if not encoder:
+        return
+    
+    steps = encoder.steps
+    if steps == 0:
+        return
+    
+    with menu_lock:
+        menu = menu_items[current_menu_index]
+        
+        if menu == 'VOL':
+            # Adjust output volume (0.1 to 1.5) - finer steps
+            output_volume = np.clip(output_volume + (steps * 0.01), 0.1, 1.5)
+            print(f'Volume: {output_volume:.2f} ({int(output_volume * 100)}%)')
+            
+        elif menu == 'TRIM':
+            # Adjust loop length (only if initialized)
+            if loops[0].initialized and LENGTH > 0:
+                old_length = LENGTH
+                # Adjust by 2 buffers per step - finer control
+                LENGTH = max(100, min(MAXLENGTH, LENGTH + (steps * 2)))
+                
+                # Update all loops to new length
+                for loop in loops:
+                    if loop.initialized:
+                        loop.length = LENGTH
+                        # Ensure readp/writep are within bounds
+                        loop.readp = loop.readp % LENGTH
+                        loop.writep = loop.writep % LENGTH
+                
+                print(f'Loop length: {old_length} -> {LENGTH} buffers ({(LENGTH * CHUNK) / RATE:.4f}s)')
+            else:
+                print('TRIM: No loop to trim (record first loop)')
+                
+        elif menu == 'CLK':
+            # Toggle click track
+            click_track_enabled = not click_track_enabled
+            print(f'Click track: {"ON" if click_track_enabled else "OFF"}')
+    
+    # Reset encoder steps
+    encoder.steps = 0
+    
+    # Update display
+    if display:
+        try:
+            update_display_status()
+        except:
+            pass
+
 #now defining functions of all the buttons during jam session...
 
 for i in range(4):
@@ -595,6 +972,12 @@ for i in range(4):
     RECBUTTONS[i].when_pressed = lambda idx=i: safe_set_recording(idx)
     RECBUTTONS[i].when_released = safe_update_volume
     PLAYBUTTONS[i].when_pressed = lambda idx=i: safe_toggle_mute(idx)
+
+# Setup rotary encoder callbacks if available
+if encoder and encoder_button:
+    encoder_button.when_pressed = encoder_button_pressed
+    # Poll encoder in main loop since when_rotated isn't reliable
+    print('Rotary encoder menu enabled: Press button to cycle menu, rotate to adjust')
 
 # Wait for all buttons to be released before attaching finish/restart handlers
 time.sleep(0.5)
@@ -639,6 +1022,9 @@ try:
     
     while not finished:
         show_status()
+        # Poll rotary encoder
+        if encoder:
+            encoder_rotated()
         time.sleep(0.1)
 except Exception as e:
     print(f'Error during jam session: {e}')
