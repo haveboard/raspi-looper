@@ -194,11 +194,9 @@ def update_display_status():
             draw = ImageDraw.Draw(image)
             font = ImageFont.load_default()
             
-            # Line 1: Loop time and position with high precision
+            # Line 1: Loop time (no percentage)
             if LENGTH > 0:
                 line1 = f"Loop: {loop_time:.4f}s"
-                if loops[0].initialized:
-                    line1 += f" @{loop_percent}%"
             else:
                 line1 = "Ready to record"
             draw.text((0, 0), line1, font=font, fill=255)
@@ -207,11 +205,20 @@ def update_display_status():
             line2 = f"T1234: {track_status}"
             draw.text((0, 16), line2, font=font, fill=255)
             
-            # Line 3: Individual track details
-            active_tracks = sum(1 for loop in loops if loop.initialized)
-            recording_tracks = sum(1 for loop in loops if loop.is_recording)
-            waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
-            line3 = f"Act:{active_tracks} Rec:{recording_tracks} Wait:{waiting_tracks}"
+            # Line 3: Position blocks (4 blocks showing quarters)
+            if loops[0].initialized and LENGTH > 0:
+                # Calculate which quarter we're in (0-3)
+                quarter = min(3, int((loops[0].readp / LENGTH) * 4))
+                # Use block character (█) for current quarter
+                blocks = ""
+                for i in range(4):
+                    blocks += "█" if i <= quarter else "▯"
+                line3 = f"Position: {blocks}"
+            else:
+                active_tracks = sum(1 for loop in loops if loop.initialized)
+                recording_tracks = sum(1 for loop in loops if loop.is_recording)
+                waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
+                line3 = f"Act:{active_tracks} Rec:{recording_tracks} Wait:{waiting_tracks}"
             draw.text((0, 32), line3, font=font, fill=255)
             
             # Line 4: Menu or countdown/position
@@ -242,10 +249,10 @@ def update_display_status():
             # LCD: 20x4, show comprehensive info
             # Don't use clear() - just overwrite with spaces for better reliability
             
-            # Row 1: Loop time and position
+            # Row 1: Loop time (no percentage)
             if LENGTH > 0:
                 if loops[0].initialized:
-                    row1 = f"Loop:{loop_time:.4f}s {loop_percent:2d}%"
+                    row1 = f"Loop:{loop_time:.4f}s"
                 else:
                     row1 = f"Recording {loop_time:.4f}s"
             else:
@@ -256,15 +263,22 @@ def update_display_status():
             row2 = f"Trk:{track_status}"
             row2 = str(row2)[:20].ljust(20)
             
-            # Row 3: Countdown or buffer info
+            # Row 3: Position blocks or countdown
             waiting_tracks = sum(1 for loop in loops if loop.is_waiting)
             if waiting_tracks > 0 and loops[0].initialized:
                 buffers_to_restart = LENGTH - loops[0].readp
                 time_to_restart = (buffers_to_restart * CHUNK) / RATE
                 row3 = f"Next loop:{time_to_restart:6.4f}s"
+            elif loops[0].initialized and LENGTH > 0:
+                # Calculate which quarter we're in (0-3)
+                quarter = min(3, int((loops[0].readp / LENGTH) * 4))
+                # Use block character for current quarter
+                blocks = ""
+                for i in range(4):
+                    blocks += chr(0xFF) if i <= quarter else chr(0xA1)  # Full block vs light block
+                row3 = f"Pos: {blocks}"
             else:
-                buf_pct = int((loops[0].readp / LENGTH * 100)) if LENGTH > 0 and loops[0].initialized else 0
-                row3 = f"Buf:{loops[0].readp}/{LENGTH} {buf_pct}%"
+                row3 = "No loop playing"
             row3 = str(row3)[:20].ljust(20)
             
             # Row 4: Menu with highlighting
@@ -597,7 +611,7 @@ def looping_callback(in_data, frame_count, time_info, status):
     
     # Update display periodically (less often for LCD to avoid timing issues)
     display_update_counter += 1
-    update_interval = 30 if display_type == 'LCD' else 10  # LCD updates slower
+    update_interval = 100 if display_type == 'LCD' else 50  # Much slower updates to prevent stuttering
     if display_update_counter >= update_interval:
         display_update_counter = 0
         if display and setup_donerecording:  # Only update during active looping

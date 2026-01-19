@@ -111,6 +111,9 @@ The encoder is polled continuously in the main loop for responsive control witho
 - Automatic volume adjustment to prevent clipping
 - Undo last overdub per track
 - Optional I2C display support (OLED 128x64 or LCD 20x4)
+  - **Optimized display updates**: Reduced update frequency (100 buffers for LCD, 50 for OLED) to prevent audio stuttering
+  - **Block position indicator**: Shows loop position as 4 blocks representing quarters (each block = 25% of loop)
+  - **Streamlined info**: Removed buffer counts and percentages for cleaner, faster display
 - Optional rotary encoder menu for real-time control:
   - Volume adjustment (10% to 150%)
   - Loop trim for fine-tuning timing (±100ms)
